@@ -301,8 +301,8 @@ class ChancePrepEndToEndTests(unittest.TestCase):
 
             manifest = json.loads(
                 (memory.game_dir("lucky_die_probe") / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["artifact_version"], 7)
-        self.assertEqual(ARTIFACT_VERSION, 7)
+        self.assertEqual(manifest["artifact_version"], 8)
+        self.assertEqual(ARTIFACT_VERSION, 8)
         self.assertTrue(manifest["genmodel"].endswith("-model.py"))
         notes = " | ".join(manifest["notes"])
         self.assertIn("ok on 1 sample(s)", notes)

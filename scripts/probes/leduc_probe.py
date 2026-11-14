@@ -5,9 +5,10 @@ Inline observations copy the arena shape used by ``tests/test_solver_leduc.py``:
 - round 1 parses private card, pot and an empty current-round line;
 - round 2 parses the community card and a ``check, bet`` line (facing a bet);
 - the arena's exact legal spelling is preserved (``Check``/``Bet`` -> ``Bet``);
-- round-1 equity now enumerates the opponent card plus the community draw: private J calls
-  a bet (~0.40 equity against 0.25 pot odds), private K calls and bets (~0.70);
-- round 2 is exact over the known board: private J with Q on the board folds to a bet (~0.125);
+- round-1 equity enumerates the opponent card plus the community draw: private J calls
+  a bet (0.30 equity against 0.25 pot odds), private K calls and bets (0.70);
+- round 2 is exact over the known board: private J with a higher board card folds to a bet
+  (0.125, the kicker loses the tie); private Q with board K is 0.625;
 - Kuhn / one-card text is declined by both the parser and ``matches``;
 - 20 decisions stay under the 5 ms per-move requirement.
 
@@ -97,7 +98,7 @@ class LeducProbe(Probe):
             return action == "Bet"
 
         def round_one_jack_calls_bet() -> bool:
-            # Round-1 equity enumerates the opponent card and the community draw: J is ~0.40,
+            # Round-1 equity enumerates the opponent card and the community draw: J is 0.30,
             # which clears the 0.25 pot odds of a call.
             action = solver.propose(
                 observation=round_one(card="J", pot=3, line="bet"),
@@ -123,7 +124,7 @@ class LeducProbe(Probe):
 
         def round_two_dominated_hand_folds() -> bool:
             # Private J with Q on the board is dominated by every Q and K; exact round-2 equity
-            # is ~0.125, below the pot odds, so it folds to a bet.
+            # is 0.125, below the pot odds, so it folds to a bet.
             action = solver.propose(
                 observation=round_two(card="J", community="Q", pot=4, line="bet"),
                 legal=["call", "fold"], seat=0,

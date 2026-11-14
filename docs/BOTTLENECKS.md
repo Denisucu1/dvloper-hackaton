@@ -31,16 +31,20 @@ T2 fixes land.
 | # | Bottleneck | Evidence | Impact | Mitigation | Status |
 |---|---|---|---|---|---|
 | 11 | Simgen skip is keyed on family, not on "public randomness" | `tg_blackjack_probe` classified `deals`; prep skipped genmodel with "negotiation: private values" although only the deck order is hidden; bench still won on policy/LLM | chance games lose the exact simulator they need | add `has_randomness` to the spec; skip only when `hidden_information && randomness`, else allow `chance_actions` | after T2 (needs ARTIFACT_VERSION bump) |
+| 13 | Generated grid simulators kept the `|` separator as a cell, shifting every column | real tg_connect4 replay: model legal moves looked fine but search valued every root move ~0.50 and lost 7x6; `solver_grid` wins 30/30 vs random on all variants | board-game strength | grid-first for Connect-K text + simgen prompt tells the model to strip the label and `|`; ARTIFACT_VERSION 8 | **fixed** |
+| 14 | Leduc hand comparison ignored the kicker | `_hand_value` returned (pair, high) only: J+K tied with Q+K; round-2 J on K equity 0.375 vs true 0.125, calling a -EV bet | bluff match points | return (2, rank) for pairs and (1, high, low) otherwise; exact table J/Q/K round 1 = 0.30/0.50/0.70 | **fixed** |
 | 12 | Three new chance games prove the paths, not the strength | `tg_liars_dice_probe` (hidden dice, bids <=36), `tg_blackjack_probe` (public deck), `tg_roulette_probe` (39 bets + pass): 3/3 vs random, 0 warnings, p95 2.2 s, $0.0029 | coverage only | keep as regression probes; add stronger sparring bots | done (`1f39906`, `087bd0a`) |
 
 ## Measured after the fixes
 
-- Pipeline `--fast`: **8/8 stages, 457 tests, 48/48 game variants, 17 probes, performance index 0.950** (was 0.892); new `solvers` stage: 509 proposals, 0 illegal.
+- Pipeline `--fast`: **9/9 stages, 475 tests, 48/48 game variants, 17 probes, performance index 0.950** (was 0.892); new `solvers` stage: 509 proposals, 0 illegal.
 - `scripts/report.py`: **100.0/100**, 17 probes (including the new `port` checks).
 - mini_poker 10 seeds: 5 wins / 3 draws / 2 losses -> **50% win, 64.3% score**, gate passed.
 - Luck games: liar's dice, blackjack, roulette -> 3/3, p95 2229 ms, $0.00289/match, chat 1.00.
 - 63-action wide board: depth **3** at 0.6-1.5 s (lean evaluate) vs depth 2 before; lab model depth 3 at 8 s.
 - Port verification `tg_deals` + `tg_liars_dice_probe`, 2 seeds: **4/4**, p95 2.38 s, $0.00034/match, gate passed.
+- Intelligence `intel10` (tg_deals, tg_liars_dice_probe, mini_poker, tg_connect4; 10 seeds): **94.0/100** (legality 100, tactics 97.8, outcome 77.9, efficiency 92.2, chat 100; 43 rounds, 158 decisions, 89 judged, high confidence). Same four games at 3 seeds scored 80.3 before the fixes.
+- Connect-K grid-first: **10/10** vs random, p95 ~2.1 s (was 2/3 and 4.4 s). Leduc kicker fix removes the -EV J-on-K calls; mini_poker over 10 seeds 3W/3D/4L (cards are still the binding constraint).
 - Connect-K fallback parses the real arena letter-column text and returns `drop E` on the 7x9 start.
 - `connect_four` 3 seeds after the cap: **3/3 wins**, 0 warnings, depth **6-8** in real play
   (`route=alphabeta`), p95 4.27 s, $0.0037/match, gate passed.

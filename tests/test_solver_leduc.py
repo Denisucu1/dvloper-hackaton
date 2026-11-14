@@ -88,7 +88,7 @@ class LeducPolicyTests(unittest.TestCase):
         self.assertEqual(action, "bet")
 
     def test_weak_private_card_calls_a_bet_once_the_draw_counts(self):
-        # J vs a Q bet with the community card still to come is ~0.40, above the 0.25 pot odds:
+        # J vs a bet with the community card still to come is 0.30, above the 0.25 pot odds:
         # folding this was the measured mini_poker loss (0-1).
         action = self.solver.propose(
             observation=round_one(card="J", pot=3, line="bet"),
@@ -106,11 +106,36 @@ class LeducPolicyTests(unittest.TestCase):
 
     def test_round_one_equity_enumerates_the_community_card(self):
         jack = _equity("J", None)
+        queen = _equity("Q", None)
         king = _equity("K", None)
         self.assertGreaterEqual(jack, 0.30)
-        self.assertLessEqual(jack, 0.55)
-        # Exact enumeration with ties split 0.5 gives J=0.40, Q=0.40, K=0.70.
-        self.assertGreaterEqual(king, 0.70)
+        self.assertLessEqual(jack, 0.35)
+        self.assertAlmostEqual(queen, 0.50)
+        self.assertAlmostEqual(king, 0.70)
+
+    def test_round_two_uses_the_kicker(self):
+        # Same high card, different kicker: J+board K loses to Q+board K instead of tying.
+        self.assertAlmostEqual(_equity("J", "K"), 0.125)
+        self.assertAlmostEqual(_equity("Q", "K"), 0.625)
+        self.assertAlmostEqual(_equity("K", "Q"), 0.625)
+
+    def test_smaller_kicker_folds_but_round_one_jack_still_calls(self):
+        # Round two, J with a K on the board: 0.125 equity cannot pay 0.25 pot odds (pot 3, call 1).
+        self.assertEqual(
+            self.solver.propose(
+                observation=round_two(card="J", community="K", pot=3, line="check, bet"),
+                legal=["call", "fold"], seat=1,
+            ),
+            "fold",
+        )
+        # Round one the community draw keeps J at 0.30, so the same 0.25 pot odds are worth a call.
+        self.assertEqual(
+            self.solver.propose(
+                observation=round_one(card="J", pot=3, line="bet"),
+                legal=["call", "fold"], seat=1,
+            ),
+            "call",
+        )
 
     def test_strong_private_card_calls_a_bet(self):
         action = self.solver.propose(

@@ -1,17 +1,12 @@
 """The code half of the decision: what the harness can work out without spending a token.
 
 Order at play time (first hit wins):
-1. a hand-written family solver (`solver_guess.py`, `solver_pig.py`, `solver_simul.py`, `solver_bluff.py`) - exact, cheap, deterministic;
-2. the generated game model from prep, searched here (`search.best_action`): the "the model writes the
+1. a hand-written family solver (`solver_guess.py`, `solver_pig.py`, `solver_simul.py`, `solver_luck.py`, `solver_bluff.py`, `solver_leduc.py`, `solver_deals.py`) - exact, cheap, deterministic;
+2. built-in Connect-K tactical + alpha-beta solver (`solver_grid.py`): it only understands the official
+   Connect-K board text and declines everything else, so it runs grid-first;
+3. the generated game model from prep, searched here (`search.best_action`): the "the model writes the
    simulator, code picks the move" pattern. It runs inside the sandbox subprocess, so a broken or
    adversarial module can cost one move, never the game;
-<<<<<<< HEAD
-3. built-in Connect-K tactical + alpha-beta fallback (`solver_grid.py`) when the generated simulator
-   was unavailable or failed on a Connect-K board;
-=======
-3. built-in Connect-K tactical + alpha-beta fallback (`solver_grid.py`) when the generated simulator is
-   unavailable or failed on a Connect-K board;
->>>>>>> origin/dev/om2-t2
 4. the generated `choose()` policy from prep (shallow, but better than nothing on unseen games);
 5. nothing - the caller asks the model, and `actions.choose_fallback` is the last line of defense.
 
@@ -151,6 +146,26 @@ class Engine:
         if action:
             return action, self._intent(action, claims, source=f"{self._solver_name} solver")
 
+        # Grid-first: the prep-generated simulator can mis-parse the grid text (e.g. keeping the `|`
+        # separator as a cell and shifting every column), while this built-in parser is exact. It also
+        # costs ~0.1-0.2 s instead of ~1.5 s of model search. It returns None on non-Connect text, so
+        # every other game falls through to the generated model untouched.
+        if self._grid_solver is not None:
+            try:
+                grid_action = self._grid_solver.propose(
+                    observation=observation,
+                    legal=legal_list,
+                    avoid=avoid,
+                    max_seconds=min(1.2, max(0.2, timeout * 0.35)),
+                )
+            except Exception as exc:  # noqa: BLE001 - a fallback must never cost a move
+                log(f"solver connect_k crashed: {type(exc).__name__}: {exc}")
+                grid_action = None
+            verified_grid = normalize(grid_action, legal_list) if grid_action else None
+            if verified_grid:
+                log(f"solver connect_k: {verified_grid}")
+                return verified_grid, self._intent(verified_grid, claims, source="connect_k solver")
+
         if self.model_path and self.model_failures < 3:
             budget = min(3.0, max(1.0, timeout * 0.7))
             # Strategy routing inside the sandbox: the generated model never runs in our process.
@@ -187,24 +202,6 @@ class Engine:
             self.model_failures += 1
             log(f"generated model fallback #{self.model_failures}: route={meta.get('route')} "
                 f"reason={meta.get('reason')}")
-
-        # Built-in Connect-K alpha-beta fallback when the generated simulator is absent or failed. It only
-        # understands the official board text, so on everything else it declines without touching the turn.
-        if self._grid_solver is not None:
-            try:
-                grid_action = self._grid_solver.propose(
-                    observation=observation,
-                    legal=legal_list,
-                    avoid=avoid,
-                    max_seconds=min(1.2, max(0.2, timeout * 0.35)),
-                )
-            except Exception as exc:  # noqa: BLE001 - a fallback must never cost a move
-                log(f"solver connect_k crashed: {type(exc).__name__}: {exc}")
-                grid_action = None
-            verified_grid = normalize(grid_action, legal_list) if grid_action else None
-            if verified_grid:
-                log(f"solver connect_k: {verified_grid}")
-                return verified_grid, self._intent(verified_grid, claims, source="connect_k solver")
 
         if self.genpolicy_path and self.generated_failures < 3:
             action = sandbox.call_choose(
