@@ -13,7 +13,7 @@ import re
 from ..core import Game
 
 MARK = ("X", "O")
-_DROP_RE = re.compile(r"^(?:drop|play|in|column)?\s*([a-h])$")
+_DROP_RE = re.compile(r"^(?:drop|play|in|column)?\s*([a-i])$")
 
 
 class TestConnect4(Game):
