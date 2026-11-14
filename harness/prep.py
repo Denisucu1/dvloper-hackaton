@@ -486,9 +486,14 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
     Only for perfect-information games: a deterministic model cannot referee a hidden-information game.
     Everything is best-effort: missing modules, a timeout or an exception simply keep the default search.
     """
-    tournament_on = (os.environ.get("HARNESS_TOURNAMENT", "0") == "1"
-                     or os.environ.get("BOT_HARNESS_TOURNAMENT", "0") == "1")
-    if not tournament_on or budget < 60.0:
+    forced = (os.environ.get("HARNESS_TOURNAMENT", "0") == "1"
+              or os.environ.get("BOT_HARNESS_TOURNAMENT", "0") == "1")
+    # Default: run the tournament only where the strategy choice is genuinely open. Think-ahead games
+    # already have a proven alpha-beta path and a 150 s tournament there buys nothing.
+    auto_families = ("read_opponent", "guessing", "unknown")
+    if not (forced or spec.family in auto_families):
+        return ""
+    if budget < 60.0:
         return ""
     if spec.hidden_information or spec.family in ("bluff", "deals", "truth", "guardrails"):
         return ""
@@ -541,6 +546,16 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
         notes.append(f"tournament skipped: model does not self-play ({errors[0]}/{total} errors)")
         return ""
     winner = str(best.meta.get("strategy") or best.name)
+    # Conservative switch: a non-search winner must actually beat search in a fresh paired match.
+    if winner != "search":
+        try:
+            duel = selfplay.head_to_head(model_path, rules, winner, "search", games=20, seed=seed + 1,
+                                         seconds_per_move=0.03, deadline=None)
+            if duel["score"] < 0.55:
+                notes.append(f"tournament: {winner} only {duel['score']:.2f} vs search; keeping search")
+                winner = "search"
+        except Exception:  # noqa: BLE001
+            winner = "search"
     notes.append(f"tournament: {winner} ({stats.get('games', '?')} games, "
                  f"score {best.score:.2f}, timed_out={stats.get('timed_out')})")
     log(kv(tournament=winner, games=stats.get("games"), score=round(best.score, 3),
