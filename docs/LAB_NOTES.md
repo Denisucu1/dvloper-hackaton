@@ -31,6 +31,31 @@ Every item has an environment switch, so each can be taken or left at the merge 
 - Locally, voting can hit the dev key's 60 requests a minute (one `llm http 429` seen in a four-game match).
   Arena keys have no per-minute limit (rule 7.2).
 
+## Measured in tournament mode (`--prep`, warm specialists), final lab code
+
+| Game | Opponent | Result | Longest move |
+|---|---|---|---|
+| tg_deals x2 matches (8 games) | trickster (demands 80%) | 2-2 and 2-2: eight draws, no deal | 13.2 s |
+| tg_deals | kit starter | 1-0 (kept 70 of 100, surplus +50 vs +8) | 2.9 s |
+| tg_truth | trickster | 1-0 (6 to -12) | 3.2 s |
+| tg_guardrails | trickster | 1-0 (6-2) | 2.9 s |
+| tg_connect4 | kit starter | 1-0 | 3.7 s |
+| tg_bluff | kit starter | 1-0 (+2 vs -2) | 2.5 s |
+| tg_simul | kit starter | 0.5-1.5 (4-4, then 2-6 on "rock wins 3") | 2.3 s |
+
+No warning, no illegal move and no missed clock in any of them. Prep with the brief and the chat plans
+took 47-63 s of 600 and $0.005-0.006.
+
+Earlier lab code lost two negotiation games; both causes are fixed and under test:
+the audit reading the opponent's offer backwards, and a rejected acceptance being played because the
+audit gave no alternative (now our last demand is repeated).
+
+Two validation matches are not counted: the shared dev key hit its 60 requests a minute, every call
+failed with 429 and the bot played its fallback (`walk`, a draw).
+
+Open point: with thinking, three voters and the audit, a negotiation move took up to 13.2 s of 20. The
+deadline guard still bounds it at 17 s, but total thinking time is the second knockout tie-break.
+
 ## Not verified here
 
 - The Docker image: Docker Desktop was not running on this machine. Nothing in the lab adds a dependency
