@@ -135,13 +135,17 @@ def main() -> int:
         env["LLM_MODEL"] = "haiku"
         env["HARNESS_GENPOLICY"] = "0"
 
+    # stderr goes to a file, not a pipe: nobody drains a pipe while the script waits for replies, and a
+    # bot that logs more than the pipe buffer holds would block on its own log line and never exit.
+    import tempfile
+    err_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
         [sys.executable, "-u", os.path.join(ROOT, "main.py")],
         cwd=ROOT,
         env=env,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=err_file,
         text=True,
         bufsize=1,
     )
@@ -247,7 +251,9 @@ def main() -> int:
     finally:
         if proc.poll() is None:
             proc.kill()
-        stderr = proc.stderr.read() if proc.stderr else ""
+        err_file.seek(0)
+        stderr = err_file.read()
+        err_file.close()
         if "--verbose" in sys.argv and stderr:
             print(stderr[-4000:], file=sys.stderr)
 
