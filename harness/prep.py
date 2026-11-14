@@ -44,7 +44,7 @@ def simgen_worthwhile(spec: Spec) -> tuple[bool, str]:
     reason = _SKIP_SIM_FAMILIES.get(spec.family)
     if reason:
         return False, f"{spec.family}: {reason}"
-    if spec.hidden_information:
+    if spec.hidden_information and not spec.simultaneous:
         return False, "hidden information: a deterministic model cannot see the opponent's state"
     return True, ""
 
@@ -65,7 +65,8 @@ Return exactly ONE JSON object, no markdown, with these keys:
   "action_examples": ["3-6 concrete legal action strings (e.g. 'B2', 'guess 50', 'pass') — no placeholders"],
   "fallback_action": "single literal valid action token from the rules/samples (e.g. 'B2' or '50') or ''",
   "winning_idea": "one sentence: how this game is won",
-  "hidden_information": true|false,
+  "hidden_information": true|false,  // true ONLY when part of the current state is private (cards, secret
+                                    // word/values). Simultaneous moves are NOT hidden information.
   "simultaneous": true|false,
   "scoring": "how a game/round is scored, including anything unusual",
   "speech_rules": "every restriction on what a player may SAY in chat, or empty string",
@@ -388,7 +389,16 @@ def _build_genpolicy(
     error = "no valid Python `def choose(...)` function returned"
     previous = ""
     for attempt in (1, 2):
-        prompt = user if attempt == 1 else f"{user}\n\n{_GEN_FIX.format(error=error[:900], source=previous[:5000])}"
+        if attempt == 1:
+            prompt = user
+        elif "banned token" in error:
+            # Do not resend the banned module: start fresh with an explicit allow-list. This is a cheap
+            # retry, not a security decision - the sandbox re-checks the next answer anyway.
+            prompt = (f"{user}\n\nYour previous answer used a banned construct ({error[:200]}). "
+                      "Write a fresh module. Allowed imports: math, random, re, itertools, collections, "
+                      "heapq. Never use __import__, eval, exec, open, subprocess, sockets, requests or urllib.")
+        else:
+            prompt = f"{user}\n\n{_GEN_FIX.format(error=error[:900], source=previous[:5000])}"
         text = gateway.ask(
             _GEN_SYSTEM if attempt == 1 else "You fix standalone Python 3 game modules.",
             prompt,
@@ -410,7 +420,7 @@ def _build_genpolicy(
             return str(path)
         error = detail
         if "banned token" in detail:
-            break
+            previous = ""
     try:
         path.unlink()
     except OSError:

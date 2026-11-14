@@ -54,6 +54,11 @@ GOOD_LIST_POLICY = '''def choose(observation, legal_actions, seat):
     return "crane"
 '''
 
+BANNED_POLICY = '''def choose(observation, legal_actions, seat):
+    __import__("os")
+    return "crane"
+'''
+
 
 class FakeGateway:
     def __init__(self, replies):
@@ -138,6 +143,29 @@ class PolicyRepairTests(unittest.TestCase):
         self.assertIn("PREVIOUS MODULE", retry)
         self.assertIn("pick 10", retry)
         self.assertIn("illegal", retry)
+        ok, reason = sandbox.validate_module(result, samples)
+        self.assertTrue(ok, reason)
+
+    def test_banned_construct_gets_a_fresh_retry_without_the_banned_source(self):
+        directory = Path(tempfile.mkdtemp(prefix="adn-genpolicy-"))
+        samples = [{
+            "observation": "WORD DUEL. Guess a five-letter word.",
+            "legal_actions": None,
+            "seat": 0,
+            "turn": 1,
+        }]
+        gateway = FakeGateway([BANNED_POLICY, GOOD_POLICY])
+        notes = []
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = prep._build_genpolicy(
+                gateway, directory, "fpbanned", RULES, samples, Spec(family="guessing"), notes, timeout=30.0,
+            )
+        self.assertIsNotNone(result)
+        self.assertEqual(gateway.calls, 2)
+        retry = gateway.prompts[1]
+        self.assertIn("banned construct", retry)
+        self.assertIn("Allowed imports", retry)
+        self.assertNotIn("__import__(", retry)
         ok, reason = sandbox.validate_module(result, samples)
         self.assertTrue(ok, reason)
 
