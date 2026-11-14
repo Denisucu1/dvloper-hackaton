@@ -44,8 +44,17 @@ GENPOLICY = os.environ.get("HARNESS_GENPOLICY", "1") == "1"
 
 # Limits that keep prompts (and the bill) bounded.
 MAX_RULES_CHARS = int(os.environ.get("HARNESS_MAX_RULES", "9000"))
+# Observations carry the question at their end and, in Truth games, sometimes the whole document.
+MAX_OBS_CHARS = int(os.environ.get("HARNESS_MAX_OBS", "12000"))
+MAX_DOC_CHARS = int(os.environ.get("HARNESS_MAX_DOC", "40000"))
 MAX_CHAT_LINES = int(os.environ.get("HARNESS_MAX_CHAT_LINES", "24"))
 MAX_CHAT_CHARS = 200
+# Deals: the audit of an acceptance. Seconds LEFT on the move clock that each mode needs, and the hard cap
+# on the call itself, so the audit can never be what makes us late (rule 8.2: a late answer loses the game).
+AUDIT_MIN_SECONDS = float(os.environ.get("HARNESS_AUDIT_MIN", "3.0"))
+AUDIT_THINKING_SECONDS = float(os.environ.get("HARNESS_AUDIT_THINKING", "10.5"))
+AUDIT_THINKING_CAP = float(os.environ.get("HARNESS_AUDIT_THINKING_CAP", "9.0"))
+AUDIT_FAST_CAP = float(os.environ.get("HARNESS_AUDIT_FAST_CAP", "4.0"))
 # Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
 CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
 
