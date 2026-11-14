@@ -3,13 +3,16 @@
 
 Run from the repo root:
 
-    python3 scripts/pipeline.py                 # fast, offline, ~15 s
-    python3 scripts/pipeline.py --bench         # + real arena matches and the gate
-    python3 scripts/pipeline.py --no-solvers    # skip the solver smoke stage
-    python3 scripts/pipeline.py --json out.json # machine-readable result
+    python3 scripts/pipeline.py                   # fast, offline, ~15 s
+    python3 scripts/pipeline.py --bench           # + real arena matches and the gate
+    python3 scripts/pipeline.py --no-solvers      # skip the solver smoke stage
+    python3 scripts/pipeline.py --no-intelligence # skip the replay intelligence stage
+    python3 scripts/pipeline.py --json out.json   # machine-readable result
 
 The `probes` stage runs the component scorecard; `solvers` then plays one seeded random playout per
-arena variant and feeds every observation to the family solvers. Every stage runs even if an earlier
+arena variant and feeds every observation to the family solvers. `intelligence` replays the newest
+bench run through the real arena, verifies every decision and prints the measured score (it reports
+SKIPPED when there are no bench replays, which is not a failure). Every stage runs even if an earlier
 one failed; the summary at the end says what to fix. Exit code is 0 only when every stage passed. No
 network is used unless --bench is given (arena matches call the gateway).
 """
@@ -64,6 +67,10 @@ def stages(args) -> list[tuple[str, list[str], float]]:
         plan.append(("bench", [PY, "scripts/bench.py", "--label", args.label,
                                "--games", args.games, "--seeds", str(args.seeds),
                                "--best-of", str(args.best_of)], 1800))
+    # Without --bench, score the newest existing replay right after `performance`. With --bench the
+    # fresh run must be scored, so the stage moves behind the bench stage.
+    if not args.no_intelligence:
+        plan.append(("intelligence", [PY, "scripts/intelligence.py", "--no-color"], 90))
     return plan
 
 
@@ -78,6 +85,8 @@ def main() -> int:
     parser.add_argument("--label", default="pipeline")
     parser.add_argument("--no-prep-trace", action="store_true")
     parser.add_argument("--no-solvers", action="store_true", help="skip the solver smoke stage")
+    parser.add_argument("--no-intelligence", action="store_true",
+                        help="skip the replay intelligence stage")
     parser.add_argument("--verbose", action="store_true", help="print each stage's full output")
     args = parser.parse_args()
 
