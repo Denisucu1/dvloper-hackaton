@@ -76,6 +76,10 @@ _FAMILY_EXTRA = {
         "- Before every offer or acceptance, work out in your intent what YOU would get and what THEY would get under "
         "the scoring rule. Never accept less than your walk-away value. If the game is won by whoever gains more, a "
         "deal that leaves them ahead of you is a LOSS: refuse it, because no deal (a draw) is better than a lost deal.\n"
+        "- In an auction never bid more than the item is worth to you: winning above your own value is a loss.\n"
+        "- NEVER offer yourself less than half of what is being split, and never less than your private value. A "
+        "shrinking pot or the last turns are no reason to give in: no deal is a draw, an offer below half is a loss. "
+        "Concessions move DOWN TOWARD half, never below it.\n"
         "- Your own offer must leave YOU ahead: your gain over your private value has to beat theirs over a middling "
         "private value. The higher your own private value, the more you must ask for; an offer of half the pot "
         "is a losing offer when your private value is high.\n"
@@ -263,13 +267,58 @@ Work out, in numbers, step by step:
 - "total": what is being split or traded right now (the current pot or value), if there is one (else null);
 - "theirs": what the opponent receives if this move is played;
 - "mine": what the player receives (when a pot is split: total minus theirs);
-- "walk_away": the player's private walk-away / reserve / outside value, if the observation gives one (else null);
+- "walk_away": the player's private walk-away / reserve / outside value, or in an auction the player's private
+  value for what is being bid on, if the observation gives one (else null);
 - "higher_gain_wins": true if the rules decide the game by comparing the two players' gains or surplus, else false.
 Then "verdict": "reject" if mine is below walk_away, or if higher_gain_wins and the opponent receives more than
 the player. Otherwise "ok". If you cannot work the numbers out from the rules, answer "ok".
 {{"total": <number or null>, "theirs": <number or null>, "mine": <number>, "walk_away": <number or null>,
  "higher_gain_wins": true or false, "verdict": "ok" or "reject",
  "better_action": "<a legal move to play instead, in the exact action format, e.g. a counter-offer that leaves you ahead>"}}"""
+
+
+_OFFER_MOVE = re.compile(r"(?i)^\W*(offer|propose|split|counter|counteroffer|demand|ask|request|keep|give)\b[^\d-]*(\d+(?:\.\d+)?)")
+
+
+def _audit(gateway: Gateway, *, rules: str, observation: str, action: str, timeout: float,
+           allow_thinking: bool = True) -> dict | None:
+    """One audit call. Returns the numbers, with the arithmetic and the verdict redone in code."""
+    if not gateway.affordable or timeout < config.AUDIT_MIN_SECONDS:
+        return None
+    # Thinking took 5.8 s in test games. It is switched on only with a wide margin on the move clock, and
+    # the call is then cut off well before the clock: a late answer is a lost game (8.2), a skipped audit is not.
+    thinking = allow_thinking and timeout >= config.AUDIT_THINKING_SECONDS
+    timeout = min(timeout, config.AUDIT_THINKING_CAP if thinking else config.AUDIT_FAST_CAP)
+    data = extract_json(gateway.ask(
+        _COMMIT_SYSTEM,
+        _COMMIT_USER.format(rules=_clip(rules, 5000), observation=_clip(observation, 3000), action=action),
+        max_tokens=400, timeout=timeout, temperature=0.0,
+        thinking="enabled" if thinking else "disabled", budget_tokens=1024 if thinking else None,
+    ))
+    if not data:
+        return None
+
+    def number(key: str) -> float | None:
+        try:
+            return float(data.get(key)) if data.get(key) is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    facts = {key: number(key) for key in ("mine", "walk_away", "theirs", "total")}
+    facts["relative"] = bool(data.get("higher_gain_wins"))
+    facts["verdict"] = str(data.get("verdict") or "").lower()
+    facts["better"] = actions.clean(data.get("better_action"))
+    return facts
+
+
+def _losing(facts: dict) -> bool:
+    """Decided in code, not left to the model's verdict: below our walk-away value, or - when the bigger
+    gain wins - the smaller share. No deal is a draw; a lost deal is a loss. Their private value is unknown,
+    so equal values are the fair assumption."""
+    mine, walk, theirs = facts.get("mine"), facts.get("walk_away"), facts.get("theirs")
+    below = mine is not None and walk is not None and mine < walk
+    behind = facts.get("relative") and mine is not None and theirs is not None and mine < theirs
+    return bool(below or behind)
 
 
 def audit_commitment(gateway: Gateway, *, rules: str, observation: str, action: str, timeout: float) -> str | None:
@@ -279,39 +328,103 @@ def audit_commitment(gateway: Gateway, *, rules: str, observation: str, action: 
     walk-away value was 30. Accepting is rare and final, so this one move gets a call with thinking on.
     Returns a replacement move, or None when the move stands (or the audit could not run).
     """
-    if not gateway.affordable or timeout < config.AUDIT_MIN_SECONDS:
+    facts = _audit(gateway, rules=rules, observation=observation, action=action, timeout=timeout)
+    if not facts:
         return None
-    # Thinking took 5.8 s in test games. It is switched on only with a wide margin on the move clock, and
-    # the call is then cut off well before the clock: a late answer is a lost game (8.2), a skipped audit is not.
-    thinking = timeout >= config.AUDIT_THINKING_SECONDS
-    timeout = min(timeout, config.AUDIT_THINKING_CAP if thinking else config.AUDIT_FAST_CAP)
-    data = extract_json(gateway.ask(
-        _COMMIT_SYSTEM,
-        _COMMIT_USER.format(rules=_clip(rules, 5000), observation=_clip(observation, 3000), action=action),
-        max_tokens=400, timeout=timeout, temperature=0.0,
-        thinking="enabled" if thinking else "disabled", budget_tokens=1024 if thinking else None,
-    )) or {}
-    verdict = str(data.get("verdict") or "").lower()
-    def number(key: str) -> float | None:
-        try:
-            return float(data.get(key)) if data.get(key) is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    mine, walk, theirs, total = number("mine"), number("walk_away"), number("theirs"), number("total")
+    total, theirs = facts["total"], facts["theirs"]
     if total is not None and theirs is not None and 0 <= theirs <= total:
-        mine = total - theirs  # the subtraction is ours: the model answered 40 for "90 minus 55" in a test game
-    below = mine is not None and walk is not None and mine < walk
-    # Decided in code, not left to the verdict: when the bigger gain wins, taking the smaller share is a loss,
-    # and no deal is a draw. Their private value is unknown, so equal values are the fair assumption.
-    behind = bool(data.get("higher_gain_wins")) and mine is not None and theirs is not None and mine < theirs
-    below = below or behind
-    log(kv(audit=action, total=total, mine=mine, walk_away=walk, theirs=theirs, relative=data.get("higher_gain_wins"),
-           verdict="reject" if (below or verdict == "reject") else "ok"))
-    if verdict != "reject" and not below:
+        facts["mine"] = total - theirs  # the subtraction is ours: the model answered 40 for "90 minus 55"
+    losing = _losing(facts)
+    log(kv(audit=action, total=total, mine=facts["mine"], walk_away=facts["walk_away"], theirs=theirs,
+           relative=facts["relative"], verdict="reject" if (losing or facts["verdict"] == "reject") else "ok"))
+    if facts["verdict"] != "reject" and not losing:
         return None
-    better = actions.clean(data.get("better_action"))
+    better = facts["better"]
     return better if better and not _COMMIT.match(better) else ""
+
+
+def audit_offer(gateway: Gateway, *, rules: str, observation: str, action: str, timeout: float) -> str | None:
+    """Deals: never send an offer that leaves us behind.
+
+    Seen in the benchmark: with the pot shrinking, the model panicked and played "offer 25" of a 90 pot
+    ("25 for me, 70 for you"), which the opponent accepted at once. An offer below our walk-away value, or
+    below half when the bigger gain wins, is replaced here by one that keeps us ahead. The model only reads
+    the position (pot, which side of the split the number is, our private value); the sums are done in code.
+    Returns the corrected offer, or None when the offer stands (or the audit could not run).
+    """
+    match = _OFFER_MOVE.match(action or "")
+    if not match:
+        return None
+    facts = _audit(gateway, rules=rules, observation=observation, action=action, timeout=timeout, allow_thinking=False)
+    if not facts or facts["total"] is None or facts["total"] <= 0:
+        return None
+    total, walk, number = facts["total"], facts["walk_away"], float(match.group(2))
+    if number > total:
+        return None
+    # Which side of the split is the number in the move? The reading the model's own figures are closer to.
+    as_mine = abs((facts["mine"] if facts["mine"] is not None else number) - number)
+    as_theirs = abs((facts["theirs"] if facts["theirs"] is not None else total - number) - number)
+    number_is_mine = as_mine <= as_theirs if facts["mine"] is not None else as_theirs > 0
+    facts["mine"] = number if number_is_mine else total - number
+    facts["theirs"] = total - facts["mine"]
+    losing = _losing(facts)
+    log(kv(audit=action, total=total, mine=facts["mine"], walk_away=walk, theirs=facts["theirs"],
+           relative=facts["relative"], verdict="reject" if losing else "ok"))
+    if not losing:
+        return None
+    # The smallest share that still leaves us ahead: clearly above half, and above our walk-away value.
+    target = max(-(-total * 0.55 // 1), (walk + 1) if walk is not None else 0)
+    target = min(target, total)
+    fixed = target if number_is_mine else total - target
+    text = str(int(fixed)) if float(fixed).is_integer() else f"{fixed:.2f}"
+    return action[: match.start(2)] + text + action[match.end(2):]
+
+
+_BID_MOVE = re.compile(r"(?i)^\W*(bid|raise|overbid|pay|buy)\b[^\d-]*(\d+(?:\.\d+)?)")
+_PRIVATE_VALUE = re.compile(
+    r"(?im)^[^\n]*\b(?:your|you)\b[^\n:=]*\b(?:private value|valuation|value|worth|reserve|walk-away value|budget|limit)\b"
+    r"[^\n:=]*[:=][ \t]*\$?(\d+(?:\.\d+)?)\b"
+)
+
+
+def private_value(observation: str) -> float | None:
+    """Our private value for what is being bid on, when the observation states exactly one."""
+    found = {float(value) for value in _PRIVATE_VALUE.findall(observation or "")}
+    return found.pop() if len(found) == 1 else None
+
+
+def cap_bid(gateway: Gateway, *, rules: str, observation: str, action: str, legal: list[str] | None,
+            timeout: float) -> str | None:
+    """Auctions: never bid more than the thing is worth to us.
+
+    Winning above our own value is a loss on the item whatever the auction format, so the cap is safe in
+    first-price and second-price auctions alike. The value is read from the observation in code; only when
+    the observation does not state a single one is the fast audit asked for it.
+    Returns the capped bid, or None when the bid stands.
+    """
+    match = _BID_MOVE.match(action or "")
+    if not match:
+        return None
+    bid = float(match.group(2))
+    value = private_value(observation)
+    if value is None:
+        facts = _audit(gateway, rules=rules, observation=observation, action=action, timeout=timeout, allow_thinking=False)
+        value = facts.get("walk_away") if facts else None
+    if value is None or bid <= value:
+        return None
+    log(kv(audit=action, private_value=value, verdict="reject: bid above our value"))
+    text = str(int(value)) if float(value).is_integer() else f"{value:.2f}"
+    capped = action[: match.start(2)] + text + action[match.end(2):]
+    if not legal:
+        return capped
+    exact = actions.normalize(capped, legal)
+    if exact:
+        return exact
+    # A fixed bid ladder: the highest legal bid that does not exceed our value, else a move that is not a bid.
+    ladder = [(float(m.group(2)), item) for item in legal for m in [_BID_MOVE.match(item)] if m and float(m.group(2)) <= value]
+    if ladder:
+        return max(ladder)[1]
+    return next((item for item in legal if not _BID_MOVE.match(item)), None)
 
 
 def _profile(chat_policy: ChatPolicy) -> str:
@@ -491,6 +604,21 @@ def decide_turn(
                 log(f"audit rejected {action!r}; playing {fixed!r}")
                 action, source, candidate_chat = fixed, "audit", ""  # the old line celebrated a deal we refused
                 intent = "audit: the deal on the table was worse than walking away or than their share"
+    elif spec.family == "deals" and source == "model" and action and legal_list is None and _OFFER_MOVE.match(action):
+        remaining = deadline - (time.monotonic() - started)
+        corrected = audit_offer(gateway, rules=rules, observation=observation, action=action, timeout=remaining - 1.0)
+        if corrected and corrected != action:
+            log(f"audit rejected {action!r}; playing {corrected!r}")
+            action, source, candidate_chat = corrected, "audit", ""  # the old line quoted the losing split
+            intent = "audit: that offer left us behind; asking for a share that keeps us ahead"
+    elif spec.family == "deals" and source == "model" and action and _BID_MOVE.match(action):
+        remaining = deadline - (time.monotonic() - started)
+        capped = cap_bid(gateway, rules=rules, observation=observation, action=action, legal=legal_list,
+                         timeout=remaining - 1.0)
+        if capped and capped != action:
+            log(f"audit rejected {action!r}; playing {capped!r}")
+            action, source, candidate_chat = capped, "audit", ""  # the old line may have quoted the old bid
+            intent = "audit: never bid above what the item is worth to us"
 
     # Speech rules cover the move too (6.8): a free-text move must not carry the forbidden subject.
     if action and legal_list is None and chat_policy.forbidden_hit(action):

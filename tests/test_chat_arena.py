@@ -563,6 +563,142 @@ class DealAuditTests(unittest.TestCase):
         self.assertEqual(gateway.thinking, [])
 
 
+class OfferAuditTests(unittest.TestCase):
+    """Benchmark, tg_deals with a shrinking pot of 90: the model played 'offer 25' ("25 for me, 70 for you")."""
+
+    OBS = ("SPLIT THE POT. You are Player 0.\nYour private walk-away value: 23\nTurn 3 of 8. Current pot: 90 coins.\n"
+           "Offers so far:\n  1. you offered to keep 60\n  2. opponent offered to keep 76\n"
+           'It is YOUR turn: "offer <n>" with n from 0 to 90, or "accept", or "walk".')
+
+    class Gateway(FakeGateway):
+        def __init__(self, move, audit):
+            super().__init__()
+            self.move, self.audit, self.audits = move, audit, 0
+
+        def ask(self, system, user, **kwargs):
+            self.prompts.append(system + "\n---\n" + user)
+            if "audit one move" in system:
+                self.audits += 1
+                self.kwargs = kwargs
+                return json.dumps(self.audit) if self.audit is not None else ""
+            return json.dumps({"intent": "the pot is shrinking", "action": self.move, "chat": "25 for me, 65 for you. Take it."})
+
+    def play(self, move, audit, family="deals", legal=None):
+        spec = Spec(game_id="g", family=family, hidden_information=True)
+        gateway = self.Gateway(move, audit)
+        decision = decide.decide_turn(
+            gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"), chat_policy=ChatPolicy(spec, seed="t"),
+            msg={"observation": self.OBS, "legal_actions": legal, "chat": [opp("Every turn you wait the pot shrinks!")],
+                 "turn": 3, "seat": 0},
+            rules="SPLIT THE POT. offer <n>: YOU keep n. Higher surplus wins.", deadline=15.0)
+        return decision, gateway
+
+    def test_panic_offer_below_half_is_raised(self):
+        decision, gateway = self.play("offer 25", {"total": 90, "mine": 25, "theirs": 65, "walk_away": 23,
+                                                   "higher_gain_wins": True, "verdict": "ok"})
+        self.assertEqual(decision.action, "offer 50")  # 55% of 90, rounded up
+        self.assertEqual(decision.source, "audit")
+        self.assertNotIn("25 for me", decision.chat)
+        self.assertEqual(gateway.kwargs["thinking"], "disabled")  # offers are frequent: the fast audit only
+        self.assertLessEqual(gateway.kwargs["timeout"], config.AUDIT_FAST_CAP)
+
+    def test_offer_below_walk_away_is_raised_above_it(self):
+        decision, _ = self.play("offer 20", {"total": 30, "mine": 20, "theirs": 10, "walk_away": 23,
+                                             "higher_gain_wins": False, "verdict": "ok"})
+        self.assertEqual(decision.action, "offer 24")
+
+    def test_number_that_names_their_share_is_understood(self):
+        # Some games phrase it the other way round: "offer 65" = the opponent gets 65.
+        decision, _ = self.play("offer 65", {"total": 90, "mine": 25, "theirs": 65, "walk_away": 23,
+                                             "higher_gain_wins": True, "verdict": "ok"})
+        self.assertEqual(decision.action, "offer 40")  # they get 40, we keep 50
+
+    def test_sound_offer_is_left_alone(self):
+        decision, gateway = self.play("offer 60", {"total": 90, "mine": 60, "theirs": 30, "walk_away": 23,
+                                                   "higher_gain_wins": True, "verdict": "reject"})
+        self.assertEqual(decision.action, "offer 60")  # the numbers decide, not a nervous verdict
+        self.assertEqual(gateway.audits, 1)
+
+    def test_audit_failure_never_blocks_the_move(self):
+        decision, _ = self.play("offer 60", None)
+        self.assertEqual(decision.action, "offer 60")
+
+    def test_auctions_and_other_families_are_not_touched(self):
+        _, gateway = self.play("bid 25", {"total": 90, "mine": 25, "theirs": 65, "higher_gain_wins": True})
+        self.assertEqual(gateway.audits, 0)
+        _, gateway = self.play("offer 25", {"total": 90, "mine": 25, "theirs": 65, "higher_gain_wins": True}, family="bluff")
+        self.assertEqual(gateway.audits, 0)
+
+
+class BidCapTests(unittest.TestCase):
+    """Auctions (Deals family): winning above our own private value is a loss on the item."""
+
+    OBS = "SEALED AUCTION. You are Player 1.\nYour private value for the item: 37\nRound 2 of 5.\nIt is YOUR turn."
+
+    class Gateway(FakeGateway):
+        def __init__(self, move, audit=None):
+            super().__init__()
+            self.move, self.audit, self.audits = move, audit, 0
+
+        def ask(self, system, user, **kwargs):
+            self.prompts.append(system + "\n---\n" + user)
+            if "audit one move" in system:
+                self.audits += 1
+                return json.dumps(self.audit) if self.audit else ""
+            return json.dumps({"intent": "win it", "action": self.move, "chat": "This one is mine."})
+
+    def play(self, move, observation=None, legal=None, audit=None, family="deals"):
+        spec = Spec(game_id="g", family=family, hidden_information=True)
+        gateway = self.Gateway(move, audit)
+        decision = decide.decide_turn(
+            gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"), chat_policy=ChatPolicy(spec, seed="t"),
+            msg={"observation": observation or self.OBS, "legal_actions": legal, "chat": [opp("I will outbid anything.")],
+                 "turn": 3, "seat": 1},
+            rules="AUCTION. bid <n>. The higher bid wins the item and pays its bid.", deadline=15.0)
+        return decision, gateway
+
+    def test_bid_above_our_value_is_capped_in_code(self):
+        decision, gateway = self.play("bid 52")
+        self.assertEqual(decision.action, "bid 37")
+        self.assertEqual(decision.source, "audit")
+        self.assertEqual(gateway.audits, 0)  # the value was in the observation: no extra model call
+
+    def test_bid_at_or_below_our_value_stands(self):
+        for move in ("bid 37", "bid 20", "pass"):
+            decision, gateway = self.play(move)
+            self.assertEqual(decision.action, move)
+            self.assertEqual(gateway.audits, 0)
+
+    def test_fixed_bid_ladder_takes_the_highest_legal_bid_within_value(self):
+        decision, _ = self.play("bid 50", legal=["pass", "bid 10", "bid 30", "bid 40", "bid 50"])
+        self.assertEqual(decision.action, "bid 30")
+
+    def test_no_affordable_legal_bid_means_not_bidding(self):
+        decision, _ = self.play("bid 50", legal=["pass", "bid 40", "bid 50"])
+        self.assertEqual(decision.action, "pass")
+
+    def test_value_asked_from_the_audit_when_the_observation_has_several(self):
+        observation = "AUCTION of two items.\nYour value for A: 30\nYour value for B: 12\nNow selling: B.\nIt is YOUR turn."
+        self.assertIsNone(decide.private_value(observation))
+        decision, gateway = self.play("bid 25", observation=observation, audit={"walk_away": 12, "mine": 0})
+        self.assertEqual(decision.action, "bid 12")
+        self.assertEqual(gateway.audits, 1)
+
+    def test_unknown_value_leaves_the_bid_alone(self):
+        decision, _ = self.play("bid 25", observation="AUCTION. Round 1. It is YOUR turn.")
+        self.assertEqual(decision.action, "bid 25")
+
+    def test_private_value_reader(self):
+        self.assertEqual(decide.private_value("Your private value: 37"), 37.0)
+        self.assertEqual(decide.private_value("Your valuation of the painting = $120.50"), 120.5)
+        self.assertEqual(decide.private_value("Your private walk-away value: 23\nCurrent pot: 90 coins."), 23.0)
+        self.assertIsNone(decide.private_value("Score: you 3 - opponent 4.\nYour guesses: 12"))
+
+    def test_bets_in_bluff_games_are_not_capped(self):
+        decision, _ = self.play("raise 60", family="bluff")
+        self.assertEqual(decision.action, "raise 60")
+
+
 class ClockAndLengthTests(unittest.TestCase):
     def audit_mode(self, timeout):
         seen = {}
