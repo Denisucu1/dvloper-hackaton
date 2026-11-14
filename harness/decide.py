@@ -277,11 +277,30 @@ the player. Otherwise "ok". If you cannot work the numbers out from the rules, a
  "better_action": "<a legal move to play instead, in the exact action format, e.g. a counter-offer that leaves you ahead>"}}"""
 
 
+_OFFER_USER = """RULES:
+{rules}
+
+OBSERVATION (the player you audit is "you"):
+{observation}
+
+The player is about to send this offer: {action}
+
+First check ACTION FORMAT in RULES to see what the number in "{action}" means:
+- "number_means": "mine" if RULES say that number in an offer/keep move is what "you" keep, "theirs" if RULES say it is what the opponent receives (else null).
+- "total": the current pot or total value being split right now, if there is one (else null).
+- "mine": what "you" keep if accepted (the offer number when "number_means" is "mine", else total minus the offer number).
+- "theirs": what the opponent gets if accepted (total minus "mine").
+- "walk_away": the player's private walk-away / reserve / outside value, if the observation gives one (else null).
+- "higher_gain_wins": true if the rules decide the game by comparing the two players' gains or surplus, else false.
+Answer with one JSON object only:
+{{"number_means": "mine" or "theirs", "total": <number or null>, "mine": <number>, "theirs": <number or null>, "walk_away": <number or null>, "higher_gain_wins": true or false}}"""
 _OFFER_MOVE = re.compile(r"(?i)^\W*(offer|propose|split|counter|counteroffer|demand|ask|request|keep|give)\b[^\d-]*(\d+(?:\.\d+)?)")
+_KEEP_VERBS = frozenset({"keep", "demand", "ask", "request"})
+_GIVE_VERBS = frozenset({"give"})
 
 
 def _audit(gateway: Gateway, *, rules: str, observation: str, action: str, timeout: float,
-           allow_thinking: bool = True) -> dict | None:
+           allow_thinking: bool = True, user_template: str = _COMMIT_USER) -> dict | None:
     """One audit call. Returns the numbers, with the arithmetic and the verdict redone in code."""
     if not gateway.affordable or timeout < config.AUDIT_MIN_SECONDS:
         return None
@@ -291,7 +310,7 @@ def _audit(gateway: Gateway, *, rules: str, observation: str, action: str, timeo
     timeout = min(timeout, config.AUDIT_THINKING_CAP if thinking else config.AUDIT_FAST_CAP)
     data = extract_json(gateway.ask(
         _COMMIT_SYSTEM,
-        _COMMIT_USER.format(rules=_clip(rules, 5000), observation=_clip(observation, 3000), action=action),
+        user_template.format(rules=_clip(rules, 5000), observation=_clip(observation, 3000), action=action),
         max_tokens=400, timeout=timeout, temperature=0.0,
         thinking="enabled" if thinking else "disabled", budget_tokens=1024 if thinking else None,
     ))
@@ -308,16 +327,22 @@ def _audit(gateway: Gateway, *, rules: str, observation: str, action: str, timeo
     facts["relative"] = bool(data.get("higher_gain_wins"))
     facts["verdict"] = str(data.get("verdict") or "").lower()
     facts["better"] = actions.clean(data.get("better_action"))
+    means = str(data.get("number_means") or "").strip().lower()
+    facts["number_means"] = means if means in ("mine", "theirs") else None
     return facts
 
 
 def _losing(facts: dict) -> bool:
     """Decided in code, not left to the model's verdict: below our walk-away value, or - when the bigger
-    gain wins - the smaller share. No deal is a draw; a lost deal is a loss. Their private value is unknown,
-    so equal values are the fair assumption."""
-    mine, walk, theirs = facts.get("mine"), facts.get("walk_away"), facts.get("theirs")
+    gain wins - the smaller share (or a tight majority that loses in surplus when our walk-away is high).
+    No deal is a draw; a lost deal is a loss."""
+    mine, walk, theirs, total = facts.get("mine"), facts.get("walk_away"), facts.get("theirs"), facts.get("total")
     below = mine is not None and walk is not None and mine < walk
-    behind = facts.get("relative") and mine is not None and theirs is not None and mine < theirs
+    relative = bool(facts.get("relative"))
+    behind = relative and mine is not None and theirs is not None and mine < theirs
+    if not behind and relative and total and total > 0 and mine is not None and walk is not None and theirs is not None:
+        if walk > 0.25 * total and (mine - walk) < (theirs - 0.20 * total):
+            behind = True
     return bool(below or behind)
 
 
@@ -355,16 +380,25 @@ def audit_offer(gateway: Gateway, *, rules: str, observation: str, action: str, 
     match = _OFFER_MOVE.match(action or "")
     if not match:
         return None
-    facts = _audit(gateway, rules=rules, observation=observation, action=action, timeout=timeout, allow_thinking=False)
+    facts = _audit(gateway, rules=rules, observation=observation, action=action, timeout=timeout,
+                   allow_thinking=False, user_template=_OFFER_USER)
     if not facts or facts["total"] is None or facts["total"] <= 0:
         return None
+    verb = match.group(1).lower()
     total, walk, number = facts["total"], facts["walk_away"], float(match.group(2))
     if number > total:
         return None
-    # Which side of the split is the number in the move? The reading the model's own figures are closer to.
-    as_mine = abs((facts["mine"] if facts["mine"] is not None else number) - number)
-    as_theirs = abs((facts["theirs"] if facts["theirs"] is not None else total - number) - number)
-    number_is_mine = as_mine <= as_theirs if facts["mine"] is not None else as_theirs > 0
+    if verb in _KEEP_VERBS:
+        number_is_mine = True
+    elif verb in _GIVE_VERBS:
+        number_is_mine = False
+    elif facts.get("number_means") in ("mine", "theirs"):
+        number_is_mine = facts["number_means"] == "mine"
+    else:
+        # Which side of the split is the number in the move? The reading the model's own figures are closer to.
+        as_mine = abs((facts["mine"] if facts["mine"] is not None else number) - number)
+        as_theirs = abs((facts["theirs"] if facts["theirs"] is not None else total - number) - number)
+        number_is_mine = as_mine <= as_theirs if facts["mine"] is not None else as_theirs > 0
     facts["mine"] = number if number_is_mine else total - number
     facts["theirs"] = total - facts["mine"]
     losing = _losing(facts)
@@ -372,8 +406,10 @@ def audit_offer(gateway: Gateway, *, rules: str, observation: str, action: str, 
            relative=facts["relative"], verdict="reject" if losing else "ok"))
     if not losing:
         return None
-    # The smallest share that still leaves us ahead: clearly above half, and above our walk-away value.
-    target = max(-(-total * 0.55 // 1), (walk + 1) if walk is not None else 0)
+    # The smallest share that still leaves us ahead: clearly above half, above our walk-away value, and above
+    # a 20%-of-pot baseline opponent surplus when our own walk-away is high.
+    surplus_floor = (int(0.40 * total + 0.50 * walk) + 1) if (facts.get("relative") and walk is not None and walk > 0.25 * total) else 0
+    target = max(-(-total * 0.55 // 1), (walk + 1) if walk is not None else 0, surplus_floor)
     target = min(target, total)
     fixed = target if number_is_mine else total - target
     text = str(int(fixed)) if float(fixed).is_integer() else f"{fixed:.2f}"

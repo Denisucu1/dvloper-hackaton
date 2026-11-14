@@ -629,6 +629,23 @@ class OfferAuditTests(unittest.TestCase):
         _, gateway = self.play("offer 25", {"total": 90, "mine": 25, "theirs": 65, "higher_gain_wins": True}, family="bluff")
         self.assertEqual(gateway.audits, 0)
 
+    def test_explicit_number_means_prevents_inverting_our_offer(self):
+        # Seen live in tg_deals: pot=75, offer 45 was misread as theirs=45 and flipped to offer 33.
+        decision, _ = self.play("offer 45", {"number_means": "mine", "total": 75, "mine": 30, "theirs": 45,
+                                             "walk_away": 15, "higher_gain_wins": True})
+        self.assertEqual(decision.action, "offer 45")
+        decision, _ = self.play("offer 45", {"number_means": "mine", "total": 75, "mine": 30, "theirs": 45,
+                                             "walk_away": 34, "higher_gain_wins": True})
+        self.assertEqual(decision.action, "offer 48")  # raised for high walk-away, never dropped to offer 33
+        decision, _ = self.play("keep 45", {"total": 75, "mine": 30, "theirs": 45, "walk_away": 15, "higher_gain_wins": True})
+        self.assertEqual(decision.action, "keep 45")
+
+    def test_high_walk_away_raises_narrow_majority_offer(self):
+        # Seen live: pot=100, walk_away=37, offer 55 gave only +18 surplus vs opponent's +23 on a 22 reserve.
+        decision, _ = self.play("offer 55", {"number_means": "mine", "total": 100, "mine": 55, "theirs": 45,
+                                             "walk_away": 37, "higher_gain_wins": True})
+        self.assertEqual(decision.action, "offer 59")
+
 
 class BidCapTests(unittest.TestCase):
     """Auctions (Deals family): winning above our own private value is a loss on the item."""
