@@ -103,7 +103,14 @@ SAMPLE TURNS (the model must handle every one):
 
 Write the module now."""
 
-_FIX = """Your previous module failed validation with: {error}
+_FIX = """Your previous module failed validation with:
+{error}
+
+PREVIOUS MODULE (repair this one; do not start over):
+```python
+{source}
+```
+
 Fix that error and output the full corrected Python module only. It must still handle every sample turn
 shown above and reproduce each sample's legal_actions exactly."""
 
@@ -220,6 +227,7 @@ def build_model(
         samples=_sample_blob(samples),
     )
     error = "no standalone Python module with class Model"
+    previous = ""
 
     for attempt in (1, 2):
         left = _left(started, timeout)
@@ -232,7 +240,9 @@ def build_model(
 
         # Hard ceiling: half the total budget, so a slow answer cannot eat the validation window.
         ask_timeout = min(float(timeout) / 2.0, max(0.5, left - 5.0))
-        prompt = user if attempt == 1 else f"{user}\n\n{_FIX.format(error=error[:600])}"
+        prompt = user if attempt == 1 else (
+            f"{user}\n\n{_FIX.format(error=error[:900], source=previous[:5000])}"
+        )
         try:
             text = gateway.ask(_SYSTEM, prompt, max_tokens=4000, timeout=ask_timeout, temperature=0.2)
         except Exception as exc:  # noqa: BLE001 - prep must survive a gateway hiccup and try once more
@@ -248,15 +258,17 @@ def build_model(
             log(kv(simgen="attempt", n=attempt, error="no code"))
             continue
 
+        previous = source
         memory.atomic_write_text(path, source)
         validate_timeout = max(2.0, min(30.0, _left(started, timeout) - 1.0))
         ok, reason = sandbox.validate_model(str(path), samples, rules, timeout=validate_timeout)
-        reason = " ".join(str(reason).split())[:160]
-        notes.append(f"simgen attempt {attempt}: {reason}")
-        log(kv(simgen="attempt", n=attempt, ok=ok, reason=reason))
+        detail = " ".join(str(reason).split())
+        # Keep the short form for notes/logs and the full diagnostic for the repair prompt.
+        notes.append(f"simgen attempt {attempt}: {detail[:160]}")
+        log(kv(simgen="attempt", n=attempt, ok=ok, reason=detail[:160]))
         if ok:
             return str(path)
-        error = reason
+        error = detail
 
     _unlink(path)
     return None

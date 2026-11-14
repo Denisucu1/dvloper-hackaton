@@ -132,10 +132,12 @@ class FakeGateway:
         self.replies = list(replies)
         self.calls = 0
         self.kwargs = []
+        self.prompts = []
 
     def ask(self, system, user, **kwargs):
         self.calls += 1
         self.kwargs.append(kwargs)
+        self.prompts.append(user)
         if not self.replies:
             raise AssertionError("gateway called more often than scripted")
         return self.replies.pop(0)
@@ -183,6 +185,16 @@ class SimgenTests(unittest.TestCase):
         self.assertTrue(Path(result).exists())
         ok, reason = sandbox.validate_model(str(result), SAMPLES, RULES)
         self.assertTrue(ok, reason)
+
+    def test_retry_shows_the_previous_module_to_the_model(self):
+        gateway = FakeGateway([BAD_MODEL, GOOD_MODEL])
+        result = self.build(gateway)
+
+        self.assertEqual(result, str(self.path))
+        retry = gateway.prompts[1]
+        self.assertIn("PREVIOUS MODULE", retry)
+        self.assertIn("pick 10", retry)          # the source of the failed attempt is in context
+        self.assertIn("mismatch", retry)         # and the concrete validation error
 
     def test_two_invalid_attempts_leave_no_file(self):
         gateway = FakeGateway([BAD_MODEL, BAD_MODEL])
