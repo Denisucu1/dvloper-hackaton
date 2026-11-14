@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 from harness import decide
 from harness.chatpolicy import ChatPolicy
@@ -102,6 +103,24 @@ class DecideTests(unittest.TestCase):
     def test_no_legal_list_uses_model_action(self):
         decision = run(FakeGateway({"action": "guess 42", "chat": "42"}), legal=None)
         self.assertEqual(decision.action, "guess 42")
+
+    def test_simultaneous_solver_is_not_overridden_by_model(self):
+        spec = Spec(game_id="tg_simul", family="read_opponent", simultaneous=True)
+        gateway = FakeGateway({"action": "rock", "intent": "gut feel", "chat": "Rock."})
+        obs = "DUEL OF SIGNS. Round 2 of 9. Options: rock, paper, scissors.\nLast round: you rock vs opponent paper."
+        eng = Engine(spec, seed="t")
+        with mock.patch.object(eng, "propose", return_value=("scissors", "simul solver: play scissors")):
+            decision = decide.decide_turn(
+                gateway=gateway, spec=spec, playbook="", engine=eng, chat_policy=ChatPolicy(spec, seed="t"),
+                msg={"observation": obs, "legal_actions": ["rock", "paper", "scissors"], "chat": [], "turn": 2, "seat": 0},
+                rules="Simultaneous RPS.", deadline=12.0,
+            )
+        self.assertEqual(decision.action, "scissors")
+        self.assertEqual(decision.source, "engine")
+
+    def test_simultaneous_guessing_spec_normalizes_to_read_opponent(self):
+        spec = Spec.from_dict({"game_id": "tg_simul", "family": "guessing", "simultaneous": True}, "fp")
+        self.assertEqual(spec.family, "read_opponent")
 
 
 class ReadyTests(unittest.TestCase):

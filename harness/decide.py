@@ -323,8 +323,10 @@ def _engine_hint(proposal: str | None, intent: str) -> str:
     if not proposal:
         return "\nYOUR CODE HAD NO SUGGESTION.\n"
     if "simul solver:" in intent:
-        guidance = "Prefer keeping this randomized mixed-strategy move unless you spot a clear rule exception."
-    elif " solver:" in intent or intent.startswith("generated model search:"):
+        guidance = "LOCKED MIXED-STRATEGY MOVE: your code already selected this randomized move; keep it as action and write chat consistent with it."
+    elif " solver:" in intent:
+        guidance = "LOCKED SOLVER MOVE: your code already verified this move mathematically; keep it as action and write chat around it."
+    elif intent.startswith("generated model search:"):
         guidance = "Prefer keeping this computed move unless you spot a clear rule or board mistake in it."
     else:
         guidance = "You may override it."
@@ -446,6 +448,20 @@ def decide_turn(
     if action is None:
         action = proposal or actions.choose_fallback(legal_list, avoid)
         source = "engine" if proposal else "fallback"
+
+    # Dedicated family solvers (Guessing binary search, Pig EV, Simultaneous Nash mix, Bluff pot-odds)
+    # beat LLM heuristics reliably and must not be ruined by Haiku overrides or broken RNG.
+    warned = (msg.get("warning") or {}).get("rejected")
+    verified_proposal = actions.normalize(proposal, legal_list) if proposal else None
+    if (
+        " solver:" in engine_intent
+        and verified_proposal
+        and verified_proposal != actions.normalize(warned, legal_list)
+        and not chat_policy.forbidden_hit(verified_proposal)
+    ):
+        if action != verified_proposal:
+            log(f"keeping solver move {verified_proposal!r} over model {action!r}")
+            action, source = verified_proposal, "engine"
 
     # Obedience check: the model chose exactly the move the opponent ordered, against our own computed
     # move. Any verified solver, model search, or generated policy outranks a chat command.

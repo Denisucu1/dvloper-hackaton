@@ -94,6 +94,8 @@ class Spec:
                     break
         if spec.family not in FAMILIES:
             spec.family = guess_family(f"{spec.action_format} {spec.notes}")
+        if spec.simultaneous and spec.family in ("unknown", "guessing"):
+            spec.family = "read_opponent"
         if not spec.family:
             spec.family = "unknown"
         spec.fingerprint = fp
