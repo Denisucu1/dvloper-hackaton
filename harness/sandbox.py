@@ -82,41 +82,43 @@ errors = []
 checked = 0
 for index, sample in enumerate(payload["samples"]):
     seat = int(sample.get("seat", 0) or 0)
+    label = str(sample.get("variant") or "").strip()
+    tag = f"sample {index}" + (f" [{label}]" if label else "")
     try:
         model = _build(module, payload["rules"], seat)
         model.update(str(sample.get("observation", "")))
         moves = model.legal_actions(seat)
         moves_again = model.legal_actions(seat)
         if list(moves or []) != list(moves_again or []):
-            errors.append(f"sample {index}: legal_actions is not deterministic")
+            errors.append(f"{tag}: legal_actions is not deterministic")
             break
         expected = sample.get("legal_actions")
         if expected is not None:
             if set(map(str, moves or [])) != set(map(str, expected)):
-                errors.append(f"sample {index}: legal_actions mismatch, model={sorted(map(str, moves or []))[:8]} "
+                errors.append(f"{tag}: legal_actions mismatch, model={sorted(map(str, moves or []))[:8]} "
                               f"arena={sorted(map(str, expected))[:8]}")
                 break
         elif moves is not None and not list(moves):
-            errors.append(f"sample {index}: legal_actions is empty but the arena had moves")
+            errors.append(f"{tag}: legal_actions is empty but the arena had moves")
             break
         movers = model.to_move()
         if not isinstance(movers, (list, tuple)) or any(not isinstance(s, int) for s in movers):
-            errors.append(f"sample {index}: to_move() must be a list of seat ints")
+            errors.append(f"{tag}: to_move() must be a list of seat ints")
             break
         for action in list(moves or [])[:6]:
             child = model.clone()
             child.apply(seat, str(action))
             if not isinstance(child.is_terminal(), bool):
-                errors.append(f"sample {index}: is_terminal() must return a bool")
+                errors.append(f"{tag}: is_terminal() must return a bool")
                 break
             if child.is_terminal():
                 value = float(child.score(seat))
                 if not 0.0 <= value <= 1.0:
-                    errors.append(f"sample {index}: score() must be in [0, 1], got {value}")
+                    errors.append(f"{tag}: score() must be in [0, 1], got {value}")
                     break
         checked += 1
     except Exception as exc:
-        errors.append(f"sample {index}: {type(exc).__name__}: {exc}")
+        errors.append(f"{tag}: {type(exc).__name__}: {exc}")
         break
 sys.stdout.write(json.dumps({"ok": not errors, "reason": "; ".join(errors) or f"ok on {checked} sample(s)",
                              "checked": checked}))

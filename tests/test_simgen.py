@@ -210,5 +210,26 @@ class SimgenTests(unittest.TestCase):
         self.assertTrue(source.startswith("class Model:"))
 
 
+class MultiVariantPromptTests(unittest.TestCase):
+    """The prompt must force variant-agnostic parsing: one game_id, several board sizes/limits."""
+
+    def test_system_prompt_explains_variants(self):
+        prompt = simgen._SYSTEM.lower()
+        for phrase in ("several variants", "never hardcode", "dynamically", "every variant"):
+            self.assertIn(phrase, prompt)
+
+    def test_sample_blob_shows_variant_and_settings(self):
+        samples = [
+            {"observation": "grid 3x3", "legal_actions": ["A1"], "seat": 0,
+             "variant": "3x3 classic", "settings": {"size": 3}},
+            {"observation": "grid 5x5", "legal_actions": ["A1", "B2"], "seat": 0,
+             "variant": "5x5, four in a row", "settings": {"size": 5, "connect": 4}},
+        ]
+        blob = simgen._sample_blob(samples)
+        self.assertIn("VARIANT: 3x3 classic", blob)
+        self.assertIn("VARIANT: 5x5, four in a row", blob)
+        self.assertIn("size", blob)
+
+
 if __name__ == "__main__":
     unittest.main()

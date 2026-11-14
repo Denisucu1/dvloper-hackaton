@@ -31,7 +31,7 @@ _RETRY_FLOOR = 20.0
 _CONTRACT = '''class Model:
     def __init__(self, rules: str, seat: int): ...   # seat is MY seat; store it
     def update(self, observation: str) -> None: ...  # parse the exact arena turn text into the state
-    def legal_actions(self, seat: int) -> list[str] | None: ...  # exact action strings, None if >50
+    def legal_actions(self, seat: int) -> list[str] | None: ...  # exact action strings; None only if >200
     def apply(self, seat: int, action: str) -> None: ...
     def is_terminal(self) -> bool: ...
     def to_move(self) -> list[int]: ...              # seats that must move now
@@ -46,13 +46,26 @@ engine can play it. You write the rules engine; our code picks the move.
 The module must define exactly this interface (keep the names and signatures):
 """ + _CONTRACT + """
 
+ONE GAME, SEVERAL VARIANTS - this is where most simulators fail:
+The same game_id can arrive in ONE prep with several variants: different board sizes, limits, target
+scores or scoring twists. The samples below can come from DIFFERENT variants and are shown with their
+variant label and settings. Therefore:
+- update(observation) must derive the board size, limits and targets DYNAMICALLY from the observation
+  text itself (count the grid's rows and columns, read "1-1000", "first to 60", the target score, the
+  number of dice, ...), using `rules` only as a fallback when the text is silent.
+- NEVER hardcode a size or limit taken from one sample. A model that assumes a 3x3 board will be rejected
+  by the 5x5 sample, and vice versa.
+- legal_actions must be correct for EVERY variant, and must exclude occupied/illegal cells by parsing
+  the observation, not by replaying a fixed opening.
+
 The engine constructs Model(rules, MY_SEAT), calls update(observation) once per turn, then repeatedly
 clones the model and applies actions while searching. Therefore:
 - update() must rebuild the whole state from the observation text alone; it is the only input.
 - clone() must copy every mutable field; the search mutates clones and never the live object.
 - legal_actions(seat) must return the arena's exact action strings (any order), or [] when it is not
-  that seat's turn or the game is over. When a sample lists legal_actions, reproduce that list exactly,
-  even if it is long: validation compares the sets.
+  that seat's turn or the game is over. The search needs the FULL list (up to ~200 actions); return None
+  only when the game is genuinely wider than that. When a sample lists legal_actions, reproduce that
+  list exactly, even if it is long: validation compares the sets.
 - apply(seat, action) must accept exactly those strings and advance one ply.
 - is_terminal() returns a bool. to_move() returns a list of seat ints (one seat for alternating games,
   two for simultaneous games, [] when the game is over).
@@ -98,10 +111,17 @@ def _sample_blob(samples: list[dict]) -> str:
     for index, sample in enumerate(samples):
         legal = sample.get("legal_actions")
         legal_text = "None" if legal is None else repr([str(action) for action in legal])
+        variant = str(sample.get("variant") or "").strip()
+        settings = sample.get("settings") or {}
+        header = f"--- Sample {index + 1}"
+        if variant:
+            header += f" | VARIANT: {variant}"
+        header += f" | seat={sample.get('seat', 0)}, turn={sample.get('turn', '?')}"
+        if settings:
+            header += f" | settings={settings}"
+        header += " ---"
         chunks.append(
-            f"--- Sample {index + 1} (seat={sample.get('seat', 0)}, turn={sample.get('turn', '?')}) ---\n"
-            f"{str(sample.get('observation', ''))[:1800]}\n"
-            f"legal_actions = {legal_text}"
+            f"{header}\n{str(sample.get('observation', ''))[:1800]}\nlegal_actions = {legal_text}"
         )
     return "\n\n".join(chunks)
 

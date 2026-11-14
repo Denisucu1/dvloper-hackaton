@@ -114,8 +114,15 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     notes: list[str] = []
 
     # Samples first: they are also the validator for generated code and cost nothing.
+    # The variant label travels with the sample: one game_id may have several variants, and a generated
+    # simulator that hardcodes the first variant's geometry must be rejected (and told which one it broke).
     samples = [
-        {**dict(v.get("sample_turn") or {}), "seat": v.get("seat", 0)}
+        {
+            **dict(v.get("sample_turn") or {}),
+            "seat": v.get("seat", 0),
+            "variant": str(v.get("label", "")),
+            "settings": {k: val for k, val in v.items() if k not in ("rules", "sample_turn", "label")},
+        }
         for v in variants
         if v.get("sample_turn")
     ]
