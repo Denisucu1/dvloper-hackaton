@@ -46,6 +46,8 @@ GENPOLICY = os.environ.get("HARNESS_GENPOLICY", "1") == "1"
 MAX_RULES_CHARS = int(os.environ.get("HARNESS_MAX_RULES", "9000"))
 MAX_CHAT_LINES = int(os.environ.get("HARNESS_MAX_CHAT_LINES", "24"))
 MAX_CHAT_CHARS = 200
+# Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
+CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
 
 # Files, never directories, that hold per-game artifacts.
 ARTIFACT_SPEC = "spec.json"

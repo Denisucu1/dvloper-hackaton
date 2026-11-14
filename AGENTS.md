@@ -42,7 +42,9 @@ Construim un **mesh agnostic la joc** într-o singură imagine Docker (`harbor.h
 | `harness/sandbox.py` | Omul 2 | codul scris de model: fără rețea/LLM, timeout, validat pe `sample_turn` |
 | `harness/engine.py` | Omul 2 | propunerea de cod (politică generată → euristică); aici intră search/MCTS |
 | `harness/decide.py` | Omul 3 | o singură decizie: `{action, intent, chat}`, cu verificare și fallback |
-| `harness/chatpolicy.py` | Omul 3 | ofensivă/defensivă, untrusted input, filtru Guardrails, bancă de rezerve |
+| `harness/chatpolicy.py` | Omul 3 | `analyze()` (injection / fake authority / probe / bait / mutări împinse), bloc untrusted cu nonce, tactici ofensive `plan()`, poarta `finalize()` (Guardrails, valori private, 200 car.) |
+| `harness/opponents.py` | Omul 3 | profil de chat per adversar în `/memory/_opponents/<echipă>/<match>.json` |
+| `scripts/trickster_bot.py` | Omul 3 | sparring fără model care atacă prin chat (bot-b în arena-lite) |
 | `tests/`, `scripts/smoke.py` | toți | 43 teste + simulare completă de meci fără model (`--real` pentru gateway) |
 
 Comenzi: `py -m unittest discover -s tests -v`, `py scripts/smoke.py` (sau `make test`, `make smoke`, `make prep GAME=pig`, `make practice GAME=pig`, `make image TAG=t1` pe Linux/WSL).
