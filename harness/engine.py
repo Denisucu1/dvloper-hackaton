@@ -1,31 +1,72 @@
 """The code half of the decision: what the harness can work out without spending a token.
 
-Order at play time:
-1. a policy module the model wrote in prep (validated, sandboxed) - the "model writes a solver, code picks
-   the move" pattern that scores best on harness design;
-2. a deterministic safe heuristic over `legal_actions` (never time out, never repeat forever);
-3. nothing - the caller asks the model, and `actions.choose_fallback` is the last line of defense.
+Order at play time (first hit wins):
+1. a hand-written family solver (`solver_guess.py`, `solver_pig.py`) - exact, cheap, deterministic;
+2. the generated game model from prep, searched here (`search.best_action`): the "the model writes the
+   simulator, code picks the move" pattern. It runs inside the sandbox subprocess, so a broken or
+   adversarial module can cost one move, never the game;
+3. the generated `choose()` policy from prep (shallow, but better than nothing on unseen games);
+4. nothing - the caller asks the model, and `actions.choose_fallback` is the last line of defense.
 
-The opponent's chat claims are passed in here too, so the words genuinely reach the decision logic (6.5),
-not just the prompt.
+The opponent's chat claims are passed in here too, so their words genuinely reach the decision logic
+(6.5), not just the prompt.
 """
 from __future__ import annotations
 
-import random
+import os
 from typing import Iterable
 
-from . import sandbox
+from . import memory, sandbox
 from .actions import normalize
 from .log import log
 from .spec import Spec
 
 
+def _solvers() -> list:
+    """Import the family solvers lazily: the harness must keep working if one is missing."""
+    found = []
+    for module_name, class_name in (("solver_guess", "GuessingSolver"), ("solver_pig", "PigSolver")):
+        try:
+            module = __import__(f"harness.{module_name}", fromlist=[class_name])
+            found.append(getattr(module, class_name)())
+        except (ImportError, AttributeError) as exc:
+            log(f"solver {module_name} unavailable: {type(exc).__name__}")
+    return found
+
+
 class Engine:
     def __init__(self, spec: Spec | None = None, genpolicy_path: str | None = None, seed: str = "") -> None:
         self.spec = spec or Spec()
-        self.genpolicy_path = genpolicy_path
         self.seed = seed or self.spec.fingerprint or "0"
         self.generated_failures = 0
+        self.model_failures = 0
+        self.solver_failures = 0
+        self.genpolicy_path = genpolicy_path
+        self.model_path: str | None = None
+        self.rules = ""
+        self._load_generated()
+        self._solvers = _solvers()
+
+    # ------------------------------------------------------------------ artifacts
+    def _load_generated(self) -> None:
+        """Find the model/policy a prep (possibly in another container) left in /memory for this game."""
+        try:
+            directory = memory.game_dir(self.spec.game_id)
+            manifest = memory.read_json(directory / "manifest.json") or {}
+        except OSError:
+            return
+        name = str(manifest.get("genmodel") or "")
+        candidate = directory / name
+        if name and candidate.name == name and candidate.exists():
+            self.model_path = str(candidate)
+        if not self.genpolicy_path:
+            policy_name = str(manifest.get("genpolicy") or "")
+            policy = directory / policy_name
+            if policy_name and policy.name == policy_name and policy.exists():
+                self.genpolicy_path = str(policy)
+        self.rules = memory.read_text(directory / "rules.txt")
+        if self.model_path:
+            log(f"engine: generated model {os.path.basename(self.model_path)}")
 
     # ------------------------------------------------------------------ public
     def propose(
@@ -42,9 +83,25 @@ class Engine:
         """Returns (action or None, a short intent the chat line must be consistent with)."""
         legal_list = [str(item) for item in legal] if legal else None
 
+        action = self._ask_solver(observation, legal_list, seat, turn, timeout)
+        if action:
+            return action, self._intent(action, claims, source=f"{self._solver_name} solver")
+
+        if self.model_path and self.model_failures < 3:
+            budget = min(3.0, max(1.0, timeout * 0.7))
+            action = sandbox.call_model_best(
+                self.model_path, _search_path(), self.rules, observation, legal_list, seat,
+                timeout=budget, depth=8,
+            )
+            if action:
+                log(f"genmodel search: {action}")
+                return action, self._intent(action, claims, source="generated model search")
+            self.model_failures += 1
+            log(f"generated model fallback #{self.model_failures}")
+
         if self.genpolicy_path and self.generated_failures < 3:
             action = sandbox.call_choose(
-                self.genpolicy_path, observation, legal_list, seat, timeout=min(4.0, timeout)
+                self.genpolicy_path, observation, legal_list, seat, timeout=min(3.0, timeout)
             )
             if action:
                 return action, self._intent(action, claims, source="generated policy")
@@ -55,16 +112,39 @@ class Engine:
         # avoid anchoring the model on a random legal move.
         return None, self._intent("", claims, source="model")
 
-    # ------------------------------------------------------------------ hints
-    def _heuristic(self, legal: list[str], turn: int, seat: int, avoid: Iterable[str] | None) -> str | None:
-        if not legal:
-            return None
-        seen = {str(item) for item in (avoid or [])}
-        fresh = [item for item in legal if item not in seen] or legal
-        # Seeded by turn+seat: varied enough to look alive, stable enough to debug with a seed.
-        rng = random.Random(f"{self.seed}:{turn}:{seat}")
-        return normalize(rng.choice(fresh), legal)
+    # ------------------------------------------------------------------ solvers
+    @property
+    def _solver_name(self) -> str:
+        return getattr(self, "_solver_label", "family")
 
+    def _ask_solver(
+        self, observation: str, legal: list[str] | None, seat: int, turn: int, timeout: float
+    ) -> str | None:
+        if self.solver_failures >= 3:
+            return None
+        game_id = str(self.spec.game_id or "")
+        for solver in self._solvers:
+            try:
+                if not solver.matches(game_id, self.spec):
+                    continue
+                action = solver.propose(
+                    observation=observation, legal=legal, seat=seat, turn=turn,
+                    timeout=max(0.2, min(1.0, timeout)),
+                )
+            except Exception as exc:  # noqa: BLE001 - an expert bug must not cost a move
+                log(f"solver {getattr(solver, 'name', '?')} crashed: {type(exc).__name__}: {exc}")
+                self.solver_failures += 1
+                continue
+            verified = normalize(action, legal) if action else None
+            if verified:
+                self._solver_label = getattr(solver, "name", "family")
+                log(f"solver {self._solver_label}: {verified}")
+                return verified
+            if action:
+                log(f"solver {getattr(solver, 'name', '?')} proposed {action!r}, not legal; ignored")
+        return None
+
+    # ------------------------------------------------------------------ hints
     def _intent(self, action: str, claims: Iterable[str] | None, source: str) -> str:
         claim_list = [str(item) for item in (claims or []) if str(item).strip()]
         parts = [f"{source}: {'play ' + action if action else 'no candidate computed'}"]
@@ -80,3 +160,8 @@ class Engine:
         elif self.spec.family == "guardrails":
             parts.append("stay on allowed topics")
         return "; ".join(parts)[:240]
+
+
+def _search_path() -> str:
+    """`search.py` next to this file; it is loaded standalone inside the sandbox (no package imports)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "search.py")

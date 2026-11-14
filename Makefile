@@ -6,11 +6,17 @@ TAG     ?= t1
 IMAGE   ?= $(REG)/$(TEAM)/bot
 GAME    ?= tic_tac_toe
 ARENA   := arena-lite
+LABEL   ?= run
+BENCH_ARGS ?=
 
-.PHONY: help test smoke prep practice list image run push digest clean
+.PHONY: help test bench smoke prep practice list image run push digest clean
+
+bench:
+	$(PY) scripts/bench.py --label "$(LABEL)" $(BENCH_ARGS)
 
 help:
 	@echo "make test            - unit tests (stdlib unittest, no deps)"
+	@echo "make bench           - benchmark + delta vs the previous run of the same config"
 	@echo "make smoke           - scripted protocol run against main.py (no network)"
 	@echo "make list            - practice games in arena-lite"
 	@echo "make prep GAME=pig   - one prep run with the real dev key"
