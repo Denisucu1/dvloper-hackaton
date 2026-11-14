@@ -78,7 +78,8 @@ class Engine:
                 from .cfr import CfrSolver
                 cfr = CfrSolver()
                 cfr.configure(self.spec, self.rules)
-                self._solvers.append(cfr)
+                # CFR is exact for Kuhn-shaped games; try it before the generic bluff heuristic.
+                self._solvers.insert(0, cfr)
             except Exception:  # noqa: BLE001 - CFR is an optional expert, never a reason to fail
                 log("cfr solver unavailable")
 
