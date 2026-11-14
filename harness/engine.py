@@ -73,6 +73,14 @@ class Engine:
         self.rules = ""
         self._load_generated()
         self._solvers = _solvers()
+        if _flag("HARNESS_CFR"):
+            try:
+                from .cfr import CfrSolver
+                cfr = CfrSolver()
+                cfr.configure(self.spec, self.rules)
+                self._solvers.append(cfr)
+            except Exception:  # noqa: BLE001 - CFR is an optional expert, never a reason to fail
+                log("cfr solver unavailable")
 
     # ------------------------------------------------------------------ artifacts
     def _load_generated(self) -> None:
@@ -236,4 +244,5 @@ def _sibling(name: str) -> str:
 
 
 def _flag(name: str) -> bool:
-    return os.environ.get(name, "0") == "1"
+    # BOT_* is the only custom namespace arena-lite forwards in practice; the arena itself does not set it.
+    return os.environ.get(name, "0") == "1" or os.environ.get(f"BOT_{name}", "0") == "1"

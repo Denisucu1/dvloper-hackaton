@@ -486,7 +486,9 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
     Only for perfect-information games: a deterministic model cannot referee a hidden-information game.
     Everything is best-effort: missing modules, a timeout or an exception simply keep the default search.
     """
-    if os.environ.get("HARNESS_TOURNAMENT", "0") != "1" or budget < 60.0:
+    tournament_on = (os.environ.get("HARNESS_TOURNAMENT", "0") == "1"
+                     or os.environ.get("BOT_HARNESS_TOURNAMENT", "0") == "1")
+    if not tournament_on or budget < 60.0:
         return ""
     if spec.hidden_information or spec.family in ("bluff", "deals", "truth", "guardrails"):
         return ""
@@ -497,10 +499,13 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
         notes.append("tournament skipped: modules not available")
         return ""
 
+    here = os.path.dirname(os.path.abspath(__file__))
     strategies = ["search", "greedy"]
     if (spec.simultaneous or spec.family == "read_opponent") and os.path.exists(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_matrix.py")):
+            os.path.join(here, "solver_matrix.py")):
         strategies.insert(1, "matrix")
+    if os.path.exists(os.path.join(here, "solver_chance.py")):
+        strategies.append("chance")
 
     def candidate(name: str) -> object:
         return candidate_module.Candidate(kind="strategy", name=name, path=None,
@@ -526,7 +531,7 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
             play=play,
             budget_s=min(150.0, budget),
             seed=seed,
-            games_per_pair=2,
+            games_per_pair=3,
         )
     except Exception as exc:  # noqa: BLE001 - prep must never die for an experiment
         notes.append(f"tournament skipped: {type(exc).__name__}")
