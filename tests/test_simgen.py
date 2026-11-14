@@ -243,5 +243,27 @@ class MultiVariantPromptTests(unittest.TestCase):
         self.assertIn("size", blob)
 
 
+class ChancePromptTests(unittest.TestCase):
+    """Stochastic games need the optional chance surface; deterministic games must omit it."""
+
+    def test_system_prompt_has_a_stochastic_section(self):
+        prompt = simgen._SYSTEM
+        self.assertIn("STOCHASTIC GAMES", prompt)
+        self.assertIn("chance_actions(self) -> list[tuple[str, float]] | None", prompt)
+        self.assertIn("apply_chance(self, outcome: str) -> None", prompt)
+        self.assertIn("sum to 1", prompt)
+        self.assertIn("pending-chance", prompt)
+        self.assertIn("OMITS both methods", prompt)
+
+    def test_deterministic_rule_survives_in_the_prompt(self):
+        prompt = simgen._SYSTEM.lower()
+        for phrase in ("legal_actions", "clone()", "never guess", "every sample turn"):
+            self.assertIn(phrase, prompt)
+
+    def test_contract_block_mentions_both_optional_methods(self):
+        self.assertIn("def chance_actions", simgen._CONTRACT)
+        self.assertIn("def apply_chance", simgen._CONTRACT)
+
+
 if __name__ == "__main__":
     unittest.main()

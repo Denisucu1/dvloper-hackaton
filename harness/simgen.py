@@ -39,7 +39,9 @@ _CONTRACT = '''class Model:
     def evaluate(self, seat: int) -> float: ...      # non-terminal heuristic, 0.5 neutral
     def move_score(self, action: str) -> float: ...  # optional: higher = try first
     def clone(self) -> "Model": ...                  # deep enough copy; search mutates clones
-    def key(self) -> str: ...                        # optional transposition key'''
+    def key(self) -> str: ...                        # optional transposition key
+    def chance_actions(self) -> list[tuple[str, float]] | None: ...  # optional: outcomes + probabilities
+    def apply_chance(self, outcome: str) -> None: ...  # optional: advance by one chance outcome'''
 
 _SYSTEM = """Write ONE standalone Python 3 module that SIMULATES the given game, so a separate search
 engine can play it. You write the rules engine; our code picks the move.
@@ -78,13 +80,32 @@ clones the model and applies actions while searching. Therefore:
   the opponent's line, or build a double threat. The searcher tries those moves first.
 - key() is optional: a string that uniquely identifies the position.
 
+STOCHASTIC GAMES - dice, card draws, shuffled decks, random events, hidden future randomness:
+When a move does not fix the next state because the game rolls, deals or draws at random, the module
+must also expose the chance surface:
+    def chance_actions(self) -> list[tuple[str, float]] | None:
+        # outcomes of the random event pending NOW: (label, probability) pairs
+    def apply_chance(self, outcome: str) -> None:
+        # advance this state by one exact outcome label; never draw or invent an outcome here
+- apply() for a random move must only enter a pending-chance state, with to_move() returning [] while
+  the draw is pending. It must never sample the outcome itself.
+- chance_actions() returns a non-empty list at a pending chance node. Every label is a non-empty string,
+  every probability is finite and > 0, and the probabilities sum to 1 within 1e-6. Return None or []
+  at a decision node and when the game is over.
+- apply_chance(outcome) receives exactly one label from chance_actions() and must leave a complete
+  state: is_terminal() a bool, to_move() a list of seat ints, score() in [0, 1] when terminal. It must
+  never raise and must never use randomness.
+- A deterministic game (no dice, draws or random events) OMITS both methods entirely. A module that
+  defines one without the other is rejected.
+
 Rules for the code:
 - stdlib imports only: math, random, re, itertools, collections, heapq.
 - No prints, no file/network/process access, no other modules. The source is checked statically and
   rejected if it mentions banned tools.
 - Handle EVERY sample turn shown below; parsing must rely on the observation text.
-- No randomness: the search needs firm values. For dice or hidden numbers use expected values and only
-  facts the observation actually states; never guess an unknown secret.
+- No randomness in decision methods: never call `random` from apply(), apply_chance(), evaluate() or
+  score(); the search needs firm values. Random events are modelled only through the chance surface
+  above. For an unknown secret use only facts the observation actually states; never guess it.
 - Keep it under ~200 lines. apply() and clone() must stay under 1 ms.
 
 Output raw Python code ONLY, starting with the imports and `class Model:` - no prose, no markdown

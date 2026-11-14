@@ -79,6 +79,19 @@ class Model:
         return Model("", self.seat)
 """
 
+# Same deterministic game plus the optional chance surface. There is no chance node in tic-tac-toe,
+# so validation must not reject it and must not invent a random event.
+CHANCE_SURFACE_MODEL = GOOD_MODEL.replace(
+    "    def key(self):",
+    "    def chance_actions(self):\n"
+    "        return None\n"
+    "\n"
+    "    def apply_chance(self, outcome):\n"
+    "        raise ValueError('no chance node')\n"
+    "\n"
+    "    def key(self):",
+)
+
 
 class ModelSandboxTests(unittest.TestCase):
     def setUp(self):
@@ -113,6 +126,11 @@ class ModelSandboxTests(unittest.TestCase):
         path = self.write("good.py", GOOD_MODEL)
         ok, _ = sandbox.validate_model(path, [], self.rules)
         self.assertFalse(ok)
+
+    def test_optional_chance_surface_without_a_chance_node_stays_valid(self):
+        path = self.write("chance_surface.py", CHANCE_SURFACE_MODEL)
+        ok, reason = sandbox.validate_model(path, self.samples, self.rules)
+        self.assertTrue(ok, reason)
 
     def test_search_plays_through_the_sandbox(self):
         path = self.write("good.py", GOOD_MODEL)

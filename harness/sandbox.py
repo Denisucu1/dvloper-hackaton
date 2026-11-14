@@ -75,11 +75,123 @@ def _build(module, rules, seat):
 """
 
 _MODEL_VALIDATE_RUNNER = _MODEL_BUILD + r"""
-import json, sys
+import json, math, sys
+
+PROB_TOL = 1e-6
+PROBE_LIMIT = 24
+
 payload = json.loads(sys.stdin.read())
 module = _load("generated_model", sys.argv[1])
 errors = []
 checked = 0
+chance_nodes = 0
+
+
+def _chance_outcomes(model, tag):
+    # Validate one chance node's distribution; [] means "not a chance node".
+    getter = getattr(model, "chance_actions", None)
+    if not callable(getter):
+        return []
+    try:
+        raw = getter()
+    except Exception as exc:
+        raise RuntimeError(f"{tag}: chance_actions raised {type(exc).__name__}: {exc}")
+    if raw is None:
+        return []
+    try:
+        pairs = list(raw)
+    except Exception:
+        raise RuntimeError(f"{tag}: chance_actions must return a list of (str, probability) pairs")
+    if not pairs:
+        return []
+    outcomes = []
+    total = 0.0
+    for item in pairs:
+        try:
+            label, probability = item
+        except Exception:
+            raise RuntimeError(f"{tag}: chance_actions entries must be (str, probability) pairs")
+        if not isinstance(label, str) or not label.strip():
+            raise RuntimeError(f"{tag}: chance outcome label must be a non-empty string")
+        try:
+            weight = float(probability)
+        except Exception:
+            raise RuntimeError(f"{tag}: outcome {label!r}: probability must be a number")
+        if not math.isfinite(weight) or weight <= 0.0:
+            raise RuntimeError(
+                f"{tag}: outcome {label!r}: probability must be finite and > 0, got {probability!r}")
+        outcomes.append((label, weight))
+        total += weight
+    if abs(total - 1.0) > PROB_TOL:
+        raise RuntimeError(f"{tag}: chance_actions sums to {total:g}, expected 1")
+    return outcomes
+
+
+def _check_chance_node(model, tag, seat):
+    # Apply every outcome on a clone and require a coherent resulting state.
+    outcomes = _chance_outcomes(model, tag)
+    if not outcomes:
+        return False
+    for label, _weight in outcomes:
+        try:
+            child = model.clone()
+        except Exception as exc:
+            raise RuntimeError(f"{tag}: clone() before apply_chance({label!r}) raised "
+                               f"{type(exc).__name__}: {exc}")
+        applier = getattr(child, "apply_chance", None)
+        if not callable(applier):
+            raise RuntimeError(f"{tag}: chance_actions without apply_chance")
+        try:
+            applier(label)
+        except Exception as exc:
+            raise RuntimeError(f"{tag}: apply_chance({label!r}) raised {type(exc).__name__}: {exc}")
+        terminal = child.is_terminal()
+        if not isinstance(terminal, bool):
+            raise RuntimeError(f"{tag}: apply_chance({label!r}) left is_terminal() non-bool")
+        movers = child.to_move()
+        if not isinstance(movers, (list, tuple)) or any(not isinstance(value, int) for value in movers):
+            raise RuntimeError(f"{tag}: apply_chance({label!r}) left to_move() not a list of seat ints")
+        if terminal:
+            value = float(child.score(seat))
+            if not 0.0 <= value <= 1.0:
+                raise RuntimeError(f"{tag}: apply_chance({label!r}) left score() out of [0, 1]: {value}")
+    return True
+
+
+def _find_chance_node(model, tag, seat):
+    # Find a reachable chance node (the sample itself, or within two decision plies).
+    if _check_chance_node(model, tag, seat):
+        return True
+    seen = 0
+    frontier = [model]
+    for _depth in range(2):
+        nxt = []
+        for node in frontier:
+            try:
+                movers = list(node.to_move() or [])[:1]
+            except Exception:
+                continue
+            for mover in movers:
+                try:
+                    actions = list(node.legal_actions(mover) or [])[:6]
+                except Exception:
+                    continue
+                for action in actions:
+                    seen += 1
+                    if seen > PROBE_LIMIT:
+                        return False
+                    try:
+                        child = node.clone()
+                        child.apply(mover, str(action))
+                    except Exception:
+                        continue
+                    if _check_chance_node(child, tag, seat):
+                        return True
+                    nxt.append(child)
+        frontier = nxt
+    return False
+
+
 for index, sample in enumerate(payload["samples"]):
     seat = int(sample.get("seat", 0) or 0)
     label = str(sample.get("variant") or "").strip()
@@ -116,11 +228,32 @@ for index, sample in enumerate(payload["samples"]):
                 if not 0.0 <= value <= 1.0:
                     errors.append(f"{tag}: score() must be in [0, 1], got {value}")
                     break
+
+        # Optional chance surface: either both methods exist or neither. A half-implemented contract
+        # cannot be searched (one side would silently play a different game), so reject it early.
+        has_chance = callable(getattr(model, "chance_actions", None))
+        has_apply = callable(getattr(model, "apply_chance", None))
+        if has_chance and not has_apply:
+            errors.append(f"{tag}: defines chance_actions without apply_chance")
+            break
+        if has_apply and not has_chance:
+            errors.append(f"{tag}: defines apply_chance without chance_actions")
+            break
+        if has_chance:
+            try:
+                if _find_chance_node(model, tag, seat):
+                    chance_nodes += 1
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                break
         checked += 1
     except Exception as exc:
         errors.append(f"{tag}: {type(exc).__name__}: {exc}")
         break
-sys.stdout.write(json.dumps({"ok": not errors, "reason": "; ".join(errors) or f"ok on {checked} sample(s)",
+summary = f"ok on {checked} sample(s)"
+if chance_nodes:
+    summary += f", {chance_nodes} chance node(s)"
+sys.stdout.write(json.dumps({"ok": not errors, "reason": "; ".join(errors) or summary,
                              "checked": checked}))
 """
 

@@ -23,7 +23,7 @@ class ModelError(ValueError):
 
 # Generated artifacts live next to each other in /memory/<game_id>/; the fingerprint prefix keeps a model
 # built for one rules text from ever being played against another.
-ARTIFACT_VERSION = 6
+ARTIFACT_VERSION = 7
 MODEL_SUFFIX = "-model.py"
 POLICY_SUFFIX = "-policy.py"
 
@@ -61,11 +61,12 @@ class GameModel(Protocol):
     # `check_model()` keeps accepting it. Read them through the safe helpers below, never directly.
 
     def chance_actions(self) -> list[tuple[str, float]] | None:
-        """Outcomes of the random event that is active *now*, with raw probabilities.
+        """Outcomes of the random event that is active *now*, with probabilities.
 
         Return a non-empty list only at a chance node (normally `to_move()` is empty there). At a
-        decision node return None or an empty list. Probabilities are weights and are normalized by
-        the consumer, so a model may return counts instead of fractions.
+        decision node return None or an empty list. Hand-written fixtures may use arbitrary positive
+        weights and `chance_of()` normalizes them; a *generated* model is validated by
+        `sandbox.validate_model()`, which requires probabilities > 0 that sum to 1 (within 1e-6).
         """
 
     def apply_chance(self, outcome: str) -> None:
