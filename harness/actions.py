@@ -62,17 +62,18 @@ def choose_fallback(legal: Iterable[str] | None, avoid: Iterable[str] | None = N
     return legal_list[0]
 
 
-def is_plausible(action: str, examples: Iterable[str] | None = None) -> bool:
+def is_plausible(action: str, examples: Iterable[str] | None = None, allow_unknown: bool = False) -> bool:
     """When `legal_actions` is null we cannot verify; reject obvious garbage instead.
 
     Rulebook 5.8: with more than 50 moves the list is null and the rules define the format, so the
     spec's examples are the only shape check available before the arena answers with a warning.
+    `allow_unknown` is set for Truth, where "unknown" is a real, preferred answer.
     """
     if not action or len(action) > 120:
         return False
     if any(token in action for token in ("{", "}", "[", "]", "\x00")):
         return False
-    if action.lower() in {"none", "null", "n/a", "unknown"}:
+    if action.lower() in {"none", "null", "n/a"} or (action.lower() == "unknown" and not allow_unknown):
         return False
     patterns = [str(example) for example in (examples or []) if example]
     if not patterns:

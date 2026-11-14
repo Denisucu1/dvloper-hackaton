@@ -227,6 +227,30 @@ _ZERO_WIDTH = dict.fromkeys(
 )
 _LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i", "|": "i"})
 
+# Confusable letters that NFKC alone does not fold: Cyrillic/Greek/small-capital lookalikes. The table
+# only ever feeds the checks below, never a line we emit.
+_CONFUSABLE = {
+    # Cyrillic
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c",
+    "\u0445": "x", "\u0456": "i", "\u0455": "s", "\u0443": "y", "\u043a": "k",
+    "\u043c": "m", "\u043d": "h", "\u0442": "t", "\u0432": "b", "\u0433": "r",
+    "\u043f": "n", "\u0458": "j", "\u0501": "d", "\u04cf": "l", "\u04bb": "h",
+    # Greek
+    "\u03b1": "a", "\u03bf": "o", "\u03c1": "p", "\u03c4": "t", "\u03c5": "u",
+    "\u03c7": "x", "\u03b9": "i", "\u03ba": "k", "\u03bd": "v", "\u03b5": "e",
+    "\u03b7": "n", "\u03bc": "u", "\u03c9": "w", "\u03f2": "c", "\u03f3": "j",
+    # Latin small capitals and other letter lookalikes
+    "\u1d00": "a", "\u0299": "b", "\u1d04": "c", "\u1d05": "d", "\u1d07": "e",
+    "\u0262": "g", "\u029c": "h", "\u026a": "i", "\u1d0a": "j", "\u1d0b": "k",
+    "\u029f": "l", "\u1d0d": "m", "\u0274": "n", "\u1d0f": "o", "\u1d18": "p",
+    "\u0280": "r", "\ua731": "s", "\u1d1b": "t", "\u1d1c": "u", "\u1d20": "v",
+    "\u1d21": "w", "\u028f": "y", "\u1d22": "z", "\u0131": "i", "\u0237": "j",
+    "\u0251": "a",
+}
+# Invisible fillers that are letters (not Cf) but render as nothing: they must not split a word in a check.
+_SKELETON_INVISIBLE = {chr(code) for code in _ZERO_WIDTH} | set("\u115f\u1160\u3164\uffa0\u2800")
+_SKELETON_DROP = frozenset({"Mn", "Mc", "Me", "Cf", "Cs", "Co", "Cn"})
+
 # Lines in the observation that hold OUR private state: "Your secret number (...): 51", "Your hand: Kh 7d".
 _SECRET_LINE = re.compile(
     r"(?im)^[^\n]*\b(?:your|you hold|you have|you were dealt|you are holding)\b[^\n:=]*"
@@ -243,6 +267,25 @@ def _nfkc(text: object) -> str:
 
 def _canon(text: object) -> str:
     return _nfkc(text).casefold()
+
+
+def _skeleton(text: object) -> str:
+    """A check-only view that folds confusables and strips accents/invisible characters.
+
+    NFKD after NFKC exposes accents so the combining marks can go ("píneapple" -> "pineapple"); the
+    confusable table maps Cyrillic, Greek and small-capital lookalikes onto the Latin letters they imitate.
+    Never use this on a line we emit - it only makes the gate see what a human reader would see.
+    """
+    value = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", str(text or "")))
+    kept: list[str] = []
+    for char in value:
+        if char in _SKELETON_INVISIBLE or unicodedata.category(char) in _SKELETON_DROP:
+            continue
+        mapped = _CONFUSABLE.get(char)
+        if mapped is None:
+            mapped = _CONFUSABLE.get(char.casefold(), char)
+        kept.append(mapped)
+    return "".join(kept).casefold()
 
 
 def _one_line(text: object) -> str:
@@ -434,9 +477,9 @@ class ChatPolicy:
     # ---------------------------------------------------------------- defense: read
     @staticmethod
     def tag(text: str) -> list[str]:
-        """Tags for one opponent line. Matching runs on a normalized copy; the original text is kept."""
-        canon = _canon(text)
-        return [name for name, patterns in _RX.items() if any(rx.search(canon) for rx in patterns)]
+        """Tags for one opponent line. Matching runs on normalized copies; the original text is kept."""
+        views = (_canon(text), _skeleton(text))
+        return [name for name, patterns in _RX.items() if any(rx.search(view) for rx in patterns for view in views)]
 
     def analyze(self, chat_lines: list[dict] | None, legal: list[str] | None = None) -> ChatIntel:
         """Read the whole match chat in code. Stateless: every message carries the full conversation."""
@@ -579,7 +622,7 @@ class ChatPolicy:
         if not self._forbidden:
             return None
         canon = _canon(text)
-        views = (canon, canon.translate(_LEET))
+        views = (canon, canon.translate(_LEET), _skeleton(text))
         for subject, patterns in self._forbidden:
             if any(rx.search(view) for rx in patterns for view in views):
                 return subject
@@ -617,7 +660,7 @@ class ChatPolicy:
 
     def alias_hit(self, text: str) -> str | None:
         canon = _canon(text)
-        views = (canon, canon.translate(_LEET))
+        views = (canon, canon.translate(_LEET), _skeleton(text))
         for alias, patterns in self._aliases:
             if any(rx.search(view) for rx in patterns for view in views):
                 return alias
@@ -673,6 +716,51 @@ class ChatPolicy:
             log(f"chat trimmed for coherence: {text[:90]!r} -> {result[:60]!r}")
         return result
 
+    def _gate_reason(self, text: str, observation: str = "") -> str:
+        """Why a whole line may not leave, or "" when every gate passes."""
+        if text and self.forbidden_hit(text):
+            return "forbidden subject"
+        if text and self.alias_hit(text):
+            return "forbidden subject (other name)"
+        if text and self.leaks_secret(text, observation):
+            return "private value"
+        if text and (self.nonce in text or "UNTRUSTED-CHAT" in text.upper()):
+            return "prompt leakage"
+        if len(text) < 4:
+            return "incoherent or revealing" if self.last_trim else ("empty" if not text else "too short")
+        return ""
+
+    def _sentence_ok(self, sentence: str, observation: str = "") -> bool:
+        """One sentence survives redaction only if it passes every gate on its own."""
+        if not sentence:
+            return False
+        if self.forbidden_hit(sentence) or self.alias_hit(sentence):
+            return False
+        if self.leaks_secret(sentence, observation):
+            return False
+        return not (self.nonce in sentence or "UNTRUSTED-CHAT" in sentence.upper())
+
+    def _redact(self, text: str, observation: str = "") -> str:
+        """Keep the sentences that pass the gates, within the 200-character cap.
+
+        A good line is trimmed instead of being thrown away for one bad sentence. The joined result is
+        re-checked as a whole: joining two clean sentences must not manufacture a match across the seam.
+        """
+        result = ""
+        for sentence in _sentences(text):
+            if not self._sentence_ok(sentence, observation):
+                continue
+            room = config.MAX_CHAT_CHARS - len(result) - (1 if result else 0)
+            if room < 4:
+                break
+            piece = sentence[:room].strip()
+            if not piece:
+                continue
+            result = f"{result} {piece}".strip() if result else piece
+            if len(result) >= config.MAX_CHAT_CHARS:
+                break
+        return result if result and not self._gate_reason(result, observation) else ""
+
     def finalize(self, candidate: object, *, action: str = "", intent: str = "", observation: str = "",
                  intel: ChatIntel | None = None, legal: list[str] | None = None) -> str:
         """Turn whatever the model said into a legal chat move, or fall back to a safe line."""
@@ -681,20 +769,14 @@ class ChatPolicy:
         text = text[: config.MAX_CHAT_CHARS]
         self.last_trim = ""
         text = self.coherent(text, action=action, legal=legal)
-        reason = ""
-        if text and self.forbidden_hit(text):
-            reason = "forbidden subject"
-        elif text and self.alias_hit(text):
-            reason = "forbidden subject (other name)"
-        elif text and self.leaks_secret(text, observation):
-            reason = "private value"
-        elif text and (self.nonce in text or "UNTRUSTED-CHAT" in text.upper()):
-            reason = "prompt leakage"
-        elif len(text) < 4:
-            reason = "incoherent or revealing" if self.last_trim else ("empty" if not text else "too short")
+        reason = self._gate_reason(text, observation)
         self.last_block_reason = reason
         if not reason:
             return text
+        redacted = self._redact(text, observation)
+        if redacted:
+            log(f"chat redacted ({reason}): {text[:80]!r} -> {redacted[:60]!r}")
+            return redacted
         if reason not in ("empty", "too short"):
             self._blocked += 1
             log(f"chat blocked ({reason}): {text[:80]!r}")
