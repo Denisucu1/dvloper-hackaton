@@ -196,6 +196,44 @@ class BothPick:
         return BothPick(self.picks)
 
 
+class RpsPick:
+    """Simultaneous rock-paper-scissors: no dominant action, only a mixed equilibrium."""
+
+    BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+
+    def __init__(self, picks=None):
+        self.picks = dict(picks or {})
+
+    def update(self, observation):
+        return None
+
+    def legal_actions(self, seat):
+        return ["rock", "paper", "scissors"]
+
+    def apply(self, seat, action):
+        self.picks[int(seat)] = str(action)
+
+    def is_terminal(self):
+        return len(self.picks) >= 2
+
+    def to_move(self):
+        return [] if self.is_terminal() else [0, 1]
+
+    def score(self, seat):
+        if len(self.picks) < 2:
+            return 0.5
+        mine, theirs = self.picks[seat], self.picks[1 - seat]
+        if mine == theirs:
+            return 0.5
+        return 1.0 if self.BEATS[mine] == theirs else 0.0
+
+    def evaluate(self, seat):
+        return 0.5
+
+    def clone(self):
+        return RpsPick(self.picks)
+
+
 class WideAndSimultaneousTests(unittest.TestCase):
     def test_wide_game_finds_the_top_move(self):
         self.assertEqual(search.route_for(WidePick(), 0), "alphabeta")
@@ -217,10 +255,16 @@ class WideAndSimultaneousTests(unittest.TestCase):
         search.best_action(WidePick(), 0, seconds=0.2)
         self.assertLess(time.monotonic() - started, 1.5)
 
-    def test_mcts_is_deterministic_for_a_fixed_seed(self):
+    def test_alpha_beta_is_deterministic(self):
         first = search.best_action(WidePick(), 0, seconds=0.4)[0]
         second = search.best_action(WidePick(), 0, seconds=0.4)[0]
         self.assertEqual(first, second)
+
+    def test_joint_moves_are_not_frozen_across_turns(self):
+        # Rock-paper-scissors has a genuine mixed equilibrium: 20 samples from a frozen seed would all be
+        # identical, which is exactly what a round-robin opponent could learn.
+        choices = {search.best_action(RpsPick(), 0, seconds=0.25)[0] for _ in range(20)}
+        self.assertGreaterEqual(len(choices), 2)
 
     def test_terminal_simultaneous_state_has_no_move(self):
         action, value = search.best_action(BothPick({0: 3, 1: 4}), 0, seconds=0.2)
