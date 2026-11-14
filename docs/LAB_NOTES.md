@@ -69,7 +69,7 @@ deadline guard still bounds it at 17 s, but total thinking time is the second kn
 | tg_guardrails | kit starter | 2.5-1.5 (three 6-6 draws, then the opponent timed out) | see below |
 | tg_bluff | kit starter | 1-0 (+1 vs -1) | 1.8 s |
 | pig | kit starter | 1-0 | 2.2 s |
-| tic_tac_toe 5x5 | kit starter | drawn game, then a win (see the cache note) | 9.3 s |
+| tic_tac_toe 5x5 | kit starter | 1-0, played by the council, not the search (see the cache note) | 9.3 s |
 
 No warning, no illegal move, no deadline fallback. The council voted 38 times in the logs that survived:
 31 unanimous, 2 of 3 twice, the rest split; the arbiter never had to overrule the chat-aware call.
