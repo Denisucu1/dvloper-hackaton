@@ -82,6 +82,8 @@ STRATEGY_THINKING = int(os.environ.get("HARNESS_STRATEGY_THINKING", "8000"))
 STRATEGY_TIMEOUT = float(os.environ.get("HARNESS_STRATEGY_TIMEOUT", "150"))
 STRATEGY_MIN_SECONDS = float(os.environ.get("HARNESS_STRATEGY_MIN", "40"))
 STRATEGY_CHARS = int(os.environ.get("HARNESS_STRATEGY_CHARS", "2600"))
+# Seconds of the study clock kept for the rest of `start` when the brief is built there (cold container).
+STRATEGY_RESERVE = float(os.environ.get("HARNESS_STRATEGY_RESERVE", "35"))
 MAX_PLAYBOOK_CHARS = int(os.environ.get("HARNESS_MAX_PLAYBOOK", "4200"))
 # Voting (decide.py): on a turn where no code move exists, this many answers are asked for in parallel and
 # the move most of them agree on is played. 1 switches voting off.

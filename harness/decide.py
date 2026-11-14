@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from . import actions, chatplan, config, lessons, memory, opponents, turnpolicy
+from . import actions, chatplan, config, lessons, memory, opponents, strategy, turnpolicy
 from .chatpolicy import ChatPolicy, verify_card_claims
 from .engine import Engine
 from .llm import Gateway, extract_json
@@ -702,6 +702,8 @@ def decide_turn(
         chat_policy.plan_looked = True  # one disk look per game; never a build on the move clock
         chat_policy.game_plan = chatplan.load(spec.game_id, rules) or {}
         chat_policy.notes = lessons.load(spec.game_id, rules, chat_policy.opponent)
+        if not chat_policy.brief:
+            chat_policy.brief = strategy.load(spec.game_id, rules)
     verify_claims(chat_policy, observation, chat_lines)
     chat_policy.cred_fresh = any(claim["fresh"] for claim in chat_policy.specific_claims(chat_lines))
     intel = chat_policy.analyze(chat_lines, legal_list)
@@ -757,7 +759,8 @@ def decide_turn(
         system = _SYSTEM.format(
             rules=_clip(rules, _limits(spec)[0]),
             spec=spec.prompt_block(),
-            playbook=_clip(playbook, config.MAX_PLAYBOOK_CHARS) or "(none)",
+            playbook=_clip(strategy.merge(playbook, chat_policy.brief) if strategy.MARK not in (playbook or "") else playbook,
+                           config.MAX_PLAYBOOK_CHARS) or "(none)",
             extra=_extra(spec),
         )
         secrets_now = chat_policy.private_values(observation)
@@ -952,6 +955,13 @@ def decide_ready(
         chat_policy.game_plan = (chatplan.load(msg.get("game_id") or spec.game_id, rules_text)
                                  or chatplan.prepare(gateway, msg.get("game_id") or spec.game_id, rules_text,
                                                      timeout=deadline - config.CHATPLAN_RESERVE) or {})
+    if strategy.MARK not in (playbook or "") and rules_text:
+        # Prep puts the brief in the playbook. Without prep, a long study clock (120 s for a cold container)
+        # pays for one; a short one only reads what /memory has.
+        spare = deadline - (time.monotonic() - began) - config.STRATEGY_RESERVE
+        chat_policy.brief = (strategy.prepare(gateway, msg.get("game_id") or spec.game_id, rules_text, spec, timeout=spare)
+                             if spare >= config.STRATEGY_MIN_SECONDS
+                             else strategy.load(msg.get("game_id") or spec.game_id, rules_text))
     deadline = max(2.0, deadline - (time.monotonic() - began))
     chat_policy.notes = lessons.load(msg.get("game_id") or spec.game_id, rules_text, msg.get("opponent"))
     chat_policy.plan_looked = True

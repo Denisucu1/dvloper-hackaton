@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from . import config
+from . import config, memory
 from .llm import Gateway
 from .log import kv, log
 from .spec import Spec
@@ -82,3 +82,29 @@ def merge(playbook: str, brief: str) -> str:
         return playbook
     rest = (playbook or "").split(MARK)[0].strip()
     return f"{MARK}\n{brief}\n\n=== PLAYBOOK NOTES ===\n{rest}".strip()
+
+
+ARTIFACT = "strategy.txt"
+
+
+def _path(game_id: object, rules: str):
+    return memory.artifact_path(game_id or "unknown", memory.rules_fingerprint(rules or ""), ARTIFACT)
+
+
+def load(game_id: object, rules: str) -> str:
+    return memory.read_text(_path(game_id, rules), "")
+
+
+def prepare(gateway: Gateway, game_id: object, rules: str, spec: Spec, timeout: float) -> str:
+    """A cold container (no prep, 120 s study clock) still gets a brief: built at `start` from this
+    variant's rules when the clock allows, cached by rules hash for every later game and container."""
+    brief = load(game_id, rules)
+    if brief:
+        return brief
+    brief = build(gateway, rules, spec, timeout)
+    if brief:
+        try:
+            memory.atomic_write_text(_path(game_id, rules), brief)
+        except Exception as exc:  # noqa: BLE001 - a cache, never a reason to fail
+            log("strategy cache write failed:", type(exc).__name__)
+    return brief

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 from harness import actions, config, decide, memory, prep, watchdog
 from harness.llm import Gateway
@@ -37,6 +38,7 @@ def handle_prep(msg: dict, session: Session) -> dict:
 def handle_start(msg: dict, session: Session) -> dict:
     """A game begins: load the prepared variant, greet, answer `ready` inside the study clock."""
     session.gateway.configure(msg.get("llm"), cap=config.MATCH_BUDGET * config.MATCH_CONTAINER_SHARE)
+    began = time.monotonic()
     session.begin_game(msg)
     study = float(msg.get("study_seconds") or 30)
     game_id = session.game_id
@@ -65,7 +67,9 @@ def handle_start(msg: dict, session: Session) -> dict:
         playbook=session.playbook,
         chat_policy=session.chat,
         msg=msg,
-        deadline=max(2.0, study - config.SAFETY),
+        # What is LEFT of the study clock: a cold start may already have spent 45 s on the quick spec, and
+        # the work behind `ready` (chat plan, strategy brief) sizes itself on this number.
+        deadline=max(2.0, study - config.SAFETY - (time.monotonic() - began)),
     )
     return {"type": "ready", "chat": chat}
 

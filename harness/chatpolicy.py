@@ -469,6 +469,7 @@ class ChatPolicy:
         self.claim_when: dict[str, str] = {}  # claim text -> where the game stood when it was said
         self.opponent = ""
         self.plan_looked = False
+        self.brief = ""  # the strategy brief built at a cold start (harness/strategy.py); prep puts it in the playbook
         self.notes: list[str] = []  # lessons from earlier games of this game (harness/lessons.py)
         self.review = None  # the post-game review thread of the last finished game
         self.game_plan: dict = {}  # the chat plan written for this game's rules (harness/chatplan.py)
