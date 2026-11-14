@@ -52,6 +52,180 @@ sys.stdout.write(json.dumps({"action": action}))
 """
 
 
+_MODEL_BUILD = r"""
+def _load(name, path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _build(module, rules, seat):
+    cls = getattr(module, "Model", None) or getattr(module, "GameModel", None)
+    if cls is None:
+        raise RuntimeError("no class Model")
+    try:
+        return cls(rules, seat)
+    except TypeError:
+        try:
+            return cls(seat)
+        except TypeError:
+            return cls()
+"""
+
+_MODEL_VALIDATE_RUNNER = _MODEL_BUILD + r"""
+import json, sys
+payload = json.loads(sys.stdin.read())
+module = _load("generated_model", sys.argv[1])
+errors = []
+checked = 0
+for index, sample in enumerate(payload["samples"]):
+    seat = int(sample.get("seat", 0) or 0)
+    try:
+        model = _build(module, payload["rules"], seat)
+        model.update(str(sample.get("observation", "")))
+        moves = model.legal_actions(seat)
+        moves_again = model.legal_actions(seat)
+        if list(moves or []) != list(moves_again or []):
+            errors.append(f"sample {index}: legal_actions is not deterministic")
+            break
+        expected = sample.get("legal_actions")
+        if expected is not None:
+            if set(map(str, moves or [])) != set(map(str, expected)):
+                errors.append(f"sample {index}: legal_actions mismatch, model={sorted(map(str, moves or []))[:8]} "
+                              f"arena={sorted(map(str, expected))[:8]}")
+                break
+        elif moves is not None and not list(moves):
+            errors.append(f"sample {index}: legal_actions is empty but the arena had moves")
+            break
+        movers = model.to_move()
+        if not isinstance(movers, (list, tuple)) or any(not isinstance(s, int) for s in movers):
+            errors.append(f"sample {index}: to_move() must be a list of seat ints")
+            break
+        for action in list(moves or [])[:6]:
+            child = model.clone()
+            child.apply(seat, str(action))
+            if not isinstance(child.is_terminal(), bool):
+                errors.append(f"sample {index}: is_terminal() must return a bool")
+                break
+            if child.is_terminal():
+                value = float(child.score(seat))
+                if not 0.0 <= value <= 1.0:
+                    errors.append(f"sample {index}: score() must be in [0, 1], got {value}")
+                    break
+        checked += 1
+    except Exception as exc:
+        errors.append(f"sample {index}: {type(exc).__name__}: {exc}")
+        break
+sys.stdout.write(json.dumps({"ok": not errors, "reason": "; ".join(errors) or f"ok on {checked} sample(s)",
+                             "checked": checked}))
+"""
+
+_MODEL_PLAY_RUNNER = _MODEL_BUILD + r"""
+import json, sys
+payload = json.loads(sys.stdin.read())
+module = _load("generated_model", sys.argv[1])
+search = _load("sandboxed_search", sys.argv[2])
+model = _build(module, payload["rules"], int(payload["seat"]))
+model.update(payload["observation"])
+action, value = search.best_action(model, int(payload["seat"]),
+                                   seconds=float(payload["seconds"]), max_depth=int(payload["depth"]))
+sys.stdout.write(json.dumps({"action": action, "value": value}))
+"""
+
+
+def _spawn(runner: str, args: list[str], payload: dict, timeout: float, label: str) -> dict | None:
+    tmp_dir = tempfile.gettempdir()
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": tmp_dir,
+        "PYTHONHASHSEED": "0",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        # Deliberately no proxy variables and no LLM key: generated code has no way out.
+    }
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-X", "utf8", "-c", runner, *[str(a) for a in args]],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=max(0.5, float(timeout)),
+            env=env,
+            cwd=tmp_dir,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"{label}: timeout")
+        return None
+    except OSError as exc:
+        log(f"{label}: cannot start:", type(exc).__name__)
+        return None
+    if completed.returncode != 0:
+        log(f"{label}: exit", completed.returncode, completed.stderr.strip()[:200])
+        return None
+    try:
+        value = json.loads(completed.stdout or "{}")
+    except ValueError:
+        log(f"{label}: bad output")
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def validate_model(path: str, samples: list[dict], rules: str, timeout: float = 30.0) -> tuple[bool, str]:
+    """Replay the arena's sample turns through a generated game model.
+
+    Accepts the module only if its `legal_actions` match what the arena will actually offer, and if
+    applying those actions never crashes and scores sensibly. A model that fails is thrown away; the bot
+    then plays with the model's own `choose()` policy or with the LLM.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+    except OSError as exc:
+        return False, f"unreadable: {type(exc).__name__}"
+    banned = inspect_source(source)
+    if banned:
+        return False, f"banned token {banned!r}"
+    if not samples:
+        return False, "no sample_turn to validate against"
+    result = _spawn(_MODEL_VALIDATE_RUNNER, [str(path)], {"samples": samples, "rules": rules}, timeout, "genmodel")
+    if not result:
+        return False, "validation process failed"
+    return bool(result.get("ok")), str(result.get("reason") or "unknown")
+
+
+def call_model_best(
+    path: str,
+    search_path: str,
+    rules: str,
+    observation: str,
+    legal: list[str] | None,
+    seat: int,
+    timeout: float = 3.0,
+    depth: int = 8,
+) -> str | None:
+    """One play-time search inside the sandbox. Returns None on any failure so the caller can fall back."""
+    if timeout <= 0.6:
+        return None
+    payload = {
+        "rules": rules,
+        "observation": observation,
+        "seat": seat,
+        "seconds": max(0.1, min(1.5, timeout * 0.6)),
+        "depth": depth,
+    }
+    result = _spawn(_MODEL_PLAY_RUNNER, [path, search_path], payload, timeout, "genmodel")
+    if not result:
+        return None
+    action = result.get("action")
+    if action is None:
+        return None
+    if legal is not None:
+        return normalize(action, legal)
+    text = str(action)
+    return text if 0 < len(text) <= 120 else None
+
+
 def inspect_source(source: str) -> str | None:
     """Cheap static check. Returns the offending token, or None when the module looks clean."""
     lowered = source.lower()

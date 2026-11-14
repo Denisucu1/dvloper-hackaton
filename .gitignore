@@ -9,6 +9,9 @@ secrets.*
 *.key
 *.pem
 
+# Benchmark reports (regenerate with `make bench`)
+bench/results/
+
 # Python
 __pycache__/
 *.py[cod]

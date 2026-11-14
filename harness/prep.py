@@ -5,21 +5,33 @@ Output (all in /memory/<game_id>/, keyed by a hash of the rules text):
 - playbook.txt   a short, human-readable plan (also what the judges can read)
 - samples.json   the `sample_turn` messages, kept to test parsers and validate generated code
 - rules.txt      the exact rules we prepared from (traceability for the judges)
-- policy.py      optional, only with HARNESS_GENPOLICY=1: a module the model wrote, sandboxed and validated
+- policy.py      optional, only with HARNESS_GENPOLICY=1: a choose() policy the model wrote, sandboxed
+- model.py       the simulator the model wrote (harness/simgen.py): our search.py plays it, after the
+                 arena's sample turns prove its legal_actions and apply() are correct
+- manifest.json  what was built for this rules hash; a new ARTIFACT_VERSION invalidates stale artifacts
 
 Budget: one structured call for the whole game (all variants at once), so prep cost is a fraction of a cent.
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config, memory, sandbox
+from .game_model import MODEL_SUFFIX
 from .llm import Gateway
 from .log import log, kv
 from .spec import FAMILIES, Spec, fallback_spec
+
+# Prep spends its budget in this order: understanding (always), policy (cheap), simulator (expensive).
+GENMODEL = os.environ.get("HARNESS_GENMODEL", "1") == "1"
+
+# Bump when the prep pipeline changes: /memory survives freezes and a stale generated policy
+# from a previous image must never shadow the current one (rule 4.5 is about speed, not dogma).
+ARTIFACT_VERSION = 2
 
 _SPEC_SYSTEM = """You are the preparation engine of a game-playing harness. You get the rules of one
 two-player game (every variant) and real sample turns. You have never seen this game before.
@@ -75,6 +87,7 @@ class PrepResult:
     playbook: str = ""
     rules: str = ""
     genpolicy: str | None = None
+    genmodel: str | None = None
     cached: bool = False
     elapsed: float = 0.0
     calls: int = 0
@@ -114,9 +127,11 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     memory.atomic_write_text(directory / config.ARTIFACT_RULES, rules_all)
 
     cached = memory.read_json(memory.artifact_path(game_id, fp, config.ARTIFACT_SPEC))
-    if not (cached and cached.get("fingerprint") == fp):
+    if not (cached and cached.get("fingerprint") == fp
+                and cached.get("artifact_version") == ARTIFACT_VERSION):
         latest = memory.read_json(directory / config.ARTIFACT_SPEC)
-        cached = latest if latest and latest.get("fingerprint") == fp else None
+        cached = (latest if latest and latest.get("fingerprint") == fp
+                  and latest.get("artifact_version") == ARTIFACT_VERSION else None)
     if cached and cached.get("fingerprint") == fp:
         spec = Spec.from_dict(cached, fp)
         playbook = memory.read_text(memory.artifact_path(game_id, fp, config.ARTIFACT_PLAYBOOK)) or memory.read_text(directory / config.ARTIFACT_PLAYBOOK)
@@ -124,9 +139,13 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
         policy_name = str(manifest.get("genpolicy") or "")
         policy_path = directory / policy_name if policy_name else None
         genpolicy = str(policy_path) if policy_path and policy_path.name == policy_name and policy_path.exists() else None
-        log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy)))
+        model_name = str(manifest.get("genmodel") or "")
+        model_path = directory / model_name if model_name else None
+        genmodel = str(model_path) if model_path and model_path.name == model_name and model_path.exists() else None
+        log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy), genmodel=bool(genmodel)))
         return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                          cached=True, elapsed=time.time() - started, notes=["cached artifact reused"])
+                          genmodel=genmodel, cached=True, elapsed=time.time() - started,
+                          notes=["cached artifact reused"])
 
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
     call_timeout = min(180.0, max(20.0, budget_seconds * 0.55))
@@ -158,9 +177,10 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     if not spec.family or spec.family == "unknown":
         spec.family = fallback_spec(game_id, rules_all, samples, fp).family
 
-    memory.atomic_write_json(memory.artifact_path(game_id, fp, config.ARTIFACT_SPEC), spec.to_dict())
+    spec_doc = {**spec.to_dict(), "artifact_version": ARTIFACT_VERSION}
+    memory.atomic_write_json(memory.artifact_path(game_id, fp, config.ARTIFACT_SPEC), spec_doc)
     memory.atomic_write_text(memory.artifact_path(game_id, fp, config.ARTIFACT_PLAYBOOK), playbook or "(no playbook)")
-    memory.atomic_write_json(directory / config.ARTIFACT_SPEC, spec.to_dict())
+    memory.atomic_write_json(directory / config.ARTIFACT_SPEC, spec_doc)
     memory.atomic_write_text(directory / config.ARTIFACT_PLAYBOOK, playbook or "(no playbook)")
 
     genpolicy = None
@@ -172,10 +192,21 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     elif config.GENPOLICY:
         notes.append("genpolicy skipped: no sample_turn")
 
+    genmodel = None
+    if GENMODEL and samples:
+        genmodel = _build_genmodel(
+            gateway, directory, fp, game_id, rules_all, samples, spec, notes,
+            timeout=min(240.0, max(0.0, seconds - (time.time() - started) - 45.0)),
+        )
+    elif GENMODEL:
+        notes.append("genmodel skipped: no sample_turn")
+
     manifest_doc = {
         "game_id": game_id,
         "fingerprint": fp,
+        "artifact_version": ARTIFACT_VERSION,
         "genpolicy": (Path(genpolicy).name if genpolicy else ""),
+        "genmodel": (Path(genmodel).name if genmodel else ""),
         "family": spec.family,
         "seconds": seconds,
         "made": time.time(),
@@ -185,10 +216,11 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     memory.atomic_write_json(directory / "manifest.json", manifest_doc)
 
     result = PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                        cached=False, elapsed=time.time() - started, calls=gateway.calls, notes=notes)
+                        genmodel=genmodel, cached=False, elapsed=time.time() - started,
+                        calls=gateway.calls, notes=notes)
     log(kv(prep="done", game=game_id, family=spec.family, variants=len(variants),
-           plan_chars=len(playbook), genpolicy=bool(genpolicy), secs=round(result.elapsed, 1),
-           spend=gateway.summary()["spend_usd"]))
+           plan_chars=len(playbook), genpolicy=bool(genpolicy), genmodel=bool(genmodel),
+           secs=round(result.elapsed, 1), spend=gateway.summary()["spend_usd"]))
     return result
 
 
@@ -199,14 +231,23 @@ def load_artifacts(game_id: str) -> PrepResult | None:
     if not isinstance(data, dict) or not data:
         return None
     spec = Spec.from_dict(data, str(data.get("fingerprint") or ""))
+    if data.get("artifact_version") != ARTIFACT_VERSION:
+        log(kv(memory="stale artifacts ignored", game=game_id,
+               have=data.get("artifact_version"), want=ARTIFACT_VERSION))
+        return None
     playbook = memory.read_text(directory / config.ARTIFACT_PLAYBOOK)
     manifest = memory.read_json(directory / "manifest.json") or {}
     name = str(manifest.get("genpolicy") or "")
     policy = directory / name
     genpolicy = str(policy) if name and policy.name == name and policy.exists() else None
+    model_name = str(manifest.get("genmodel") or "")
+    model = directory / model_name
+    genmodel = str(model) if model_name and model.name == model_name and model.exists() else None
     rules = memory.read_text(directory / config.ARTIFACT_RULES)
-    log(kv(memory="loaded", game=game_id, family=spec.family, genpolicy=bool(genpolicy)))
-    return PrepResult(spec=spec, playbook=playbook, rules=rules, genpolicy=genpolicy, cached=True)
+    log(kv(memory="loaded", game=game_id, family=spec.family,
+           genpolicy=bool(genpolicy), genmodel=bool(genmodel)))
+    return PrepResult(spec=spec, playbook=playbook, rules=rules, genpolicy=genpolicy,
+                      genmodel=genmodel, cached=True)
 
 
 _QUICK_SYSTEM = """You are given the rules of one two-player game. Return ONE JSON object (no markdown) with:
@@ -288,6 +329,44 @@ def _build_genpolicy(
     except OSError:
         pass
     return None
+
+
+def _build_genmodel(
+    gateway: Gateway,
+    directory,
+    fingerprint: str,
+    game_id: str,
+    rules: str,
+    samples: list[dict],
+    spec: Spec,
+    notes: list[str],
+    timeout: float,
+) -> str | None:
+    """Ask the model for a simulator, then let the sandbox decide if it is real (see harness.simgen)."""
+    if timeout < 25.0:
+        notes.append("genmodel skipped: no budget left")
+        return None
+    try:
+        from . import simgen
+    except ImportError as exc:
+        notes.append(f"genmodel skipped: simgen missing ({type(exc).__name__})")
+        return None
+    path = simgen.build_model(
+        gateway=gateway,
+        directory=directory,
+        fingerprint=fingerprint,
+        game_id=game_id,
+        rules=rules,
+        samples=samples,
+        spec=spec,
+        notes=notes,
+        timeout=timeout,
+    )
+    if path:
+        log(kv(genmodel="ready", file=Path(path).name, chars=len(memory.read_text(path))))
+    else:
+        notes.append("genmodel rejected: falling back to policy/LLM")
+    return path
 
 
 def _strip_code(text: str) -> str:
