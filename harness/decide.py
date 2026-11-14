@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from . import actions, config, memory, opponents
+from . import actions, config, memory, opponents, turnpolicy
 from .chatpolicy import ChatPolicy
 from .engine import Engine
 from .llm import Gateway, extract_json
@@ -312,13 +312,22 @@ def decide_turn(
             tactic_text=tactic_text,
             chat_block=chat_policy.chat_block(chat_lines),
         )
+        # Thinking is expensive in tokens and clock: only when our code has nothing verified to offer,
+        # and only for the families where reasoning beats mechanics (see harness/turnpolicy.py).
+        thinking = turnpolicy.thinking_for(spec, has_code_move=proposal is not None, legal=legal_list)
+        if thinking and deadline < 9.0:
+            thinking = None  # not enough clock for a bounded thinking answer
+        if thinking:
+            log(f"thinking enabled ({thinking[1]}, budget {thinking[0]})")
         data = parse_answer(
             gateway.ask(
                 system,
                 user,
-                max_tokens=420,
+                max_tokens=turnpolicy.MAX_TOKENS_WITH_THINKING if thinking else 420,
                 timeout=max(2.0, deadline - 1.0),
                 temperature=0.6,
+                thinking="enabled" if thinking else "disabled",
+                budget_tokens=thinking[0] if thinking else None,
             )
         )
         if data:
