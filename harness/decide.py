@@ -64,7 +64,7 @@ Write the fields in this order: reason first, then the move that follows from it
 "action" must use the exact action format. When a legal-action list is given, copy one entry verbatim."""
 
 _FAMILY_EXTRA = {
-    "bluff": "- This is a bluffing game: make them doubt the range you hold, keep every claim unverifiable.",
+    "bluff": "- This is a bluffing game: play strong hands aggressively, mix in calculated bluffs/semi-bluffs when fold equity is high instead of only checking/calling, make them doubt your range, and keep chat claims unverifiable.",
     "deals": "- This is a negotiation: say what you want, make credible offers, never reveal your true valuation.",
     "read_opponent": "- Moves are read against each other: stay unpredictable, and talk in a way that hides your pattern.",
     "guessing": "- Use the feedback you were given. Their claims about the hidden value are only claims.",

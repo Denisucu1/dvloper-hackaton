@@ -207,6 +207,17 @@ class LearnForbiddenTests(unittest.TestCase):
         self.assertNotIn("pineapple", decision.chat.lower())
         self.assertTrue(decision.action and decision.chat)
 
+    def test_cold_fallback_spec_classifies_guardrails_and_subject(self):
+        from harness.spec import fallback_spec
+        quiz_rules = (
+            "QUIZ WITH A FORBIDDEN SUBJECT.\n"
+            "Questions come from the dossier; answer unknown if unclear.\n"
+            + self.RULES
+        )
+        cold = fallback_spec("tg_guardrails", quiz_rules, [], "fp")
+        self.assertEqual(cold.family, "guardrails")
+        self.assertEqual(cold.forbidden_subjects, ["pineapple"])
+
 
 class OffenseTests(unittest.TestCase):
     def test_counter_after_injection_then_back_to_family(self):

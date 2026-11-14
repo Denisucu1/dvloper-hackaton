@@ -126,6 +126,10 @@ class Spec:
 
 def guess_family(text: str) -> str:
     lowered = (text or "").lower()
+    if any(cue in lowered for cue in _SPEECH_CUES) and (
+        re.search(r"forbidden\s+(?:subject|topic|word|term)", lowered) or extract_forbidden(text)
+    ):
+        return "guardrails"
     scores = {family: 0 for family in _FAMILY_HINTS}
     for family, words in _FAMILY_HINTS.items():
         for word in words:
@@ -154,9 +158,41 @@ def extract_action_examples(rules: str) -> list[str]:
     return unique[:8]
 
 
+_FORBIDDEN_NAMED = [
+    # "The forbidden subject of this game is: pineapple" / "Forbidden word: moon" / "forbidden topic (...): X"
+    re.compile(r"(?i)forbidden\s+(?:subject|word|topic|term|thing|name)s?\b[^.\n:]{0,60}?(?:\bis\b|\bare\b|:)\s*:?\s*[\"'“]?([^\"'”\n.;:()]{2,40})"),
+    # never mention "pineapple" / must not say the word 'moon'
+    re.compile(r"(?i)(?:never|not|n't|cannot)\s+(?:mention|say|name|use|utter|discuss|write|reveal)\b[^\"'“\n.]{0,30}[\"'“]([^\"'”\n]{2,40})[\"'”]"),
+]
+_META_WORDS = {"forbidden", "subject", "mention", "answer", "cannot"}
+_PRONOUNS = {"it", "this", "that", "them", "anything", "something", "the", "a"}
+
+
+def is_meta_forbidden(subject: str) -> bool:
+    """'forbidden subject', 'answer I cannot say that': phrases about the rule, not the subject itself."""
+    if "<" in subject or ">" in subject:
+        return True
+    words = re.findall(r"\w+", subject.casefold())
+    if not words or len(words) > 3 or set(words) <= _PRONOUNS:
+        return True
+    return bool(_META_WORDS & set(words))
+
+
 def extract_forbidden(rules: str) -> list[str]:
-    """Best-effort denylist for the Guardrails family. The model does this better in prep; this is the net."""
+    """Forbidden subjects as named by rules/observations. Shared by cold fallback_spec and ChatPolicy."""
     found: list[str] = []
+    seen: set[str] = set()
+
+    def _keep(raw: str) -> None:
+        item = raw.strip(" \t-*_")
+        key = item.casefold()
+        if len(item) >= 2 and key not in seen and not is_meta_forbidden(item):
+            seen.add(key)
+            found.append(item[:40])
+
+    for rx in _FORBIDDEN_NAMED:
+        for match in rx.finditer(rules or ""):
+            _keep(match.group(1))
     lowered = (rules or "").lower()
     for cue in _SPEECH_CUES:
         start = 0
@@ -165,18 +201,10 @@ def extract_forbidden(rules: str) -> list[str]:
             if index < 0:
                 break
             window = (rules or "")[index : index + 220]
-            for match in re.finditer(r"[\"“']([^\"“”'\n]{1,40})[\"”']", window):
-                found.append(match.group(1).strip())
-            for match in re.finditer(r"(?i)(?:mention|say|discuss|refer to|name)\s+(?:the\s+)?(?:word\s+|subject\s+|topic\s+)?([a-z][\w -]{2,30})", window):
-                found.append(match.group(1).strip())
+            for match in re.finditer(r"[\"“']([^\"“”'\n]{2,40})[\"”']", window):
+                _keep(match.group(1))
             start = index + len(cue)
-    cleaned, seen = [], set()
-    for item in found:
-        key = item.lower().strip()
-        if key and key not in seen and key not in {"the", "it", "this", "that"}:
-            seen.add(key)
-            cleaned.append(item[:40])
-    return cleaned[:6]
+    return found[:6]
 
 
 def fallback_spec(game_id: str, rules: str, samples: list[dict] | None = None, fp: str = "") -> Spec:
