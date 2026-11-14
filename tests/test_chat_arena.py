@@ -403,7 +403,7 @@ class CoherenceTests(unittest.TestCase):
         line = chat.finalize("Taking the centre, B2.", action="C3", legal=self.LEGAL)
         self.assertNotIn("B2", line)
         self.assertTrue(line)
-        self.assertEqual(chat.last_block_reason, "incoherent with the move")
+        self.assertEqual(chat.last_block_reason, "incoherent or revealing")
 
     def test_word_actions_and_numbers_are_left_alone(self):
         chat = policy("bluff")
@@ -418,6 +418,138 @@ class CoherenceTests(unittest.TestCase):
         decision, _ = turn(gateway, [], legal=("A1", "C3"))
         self.assertIn(decision.action, {"A1", "C3"})
         self.assertNotIn("B2", decision.chat)
+
+
+class ProgressLeakTests(unittest.TestCase):
+    """Seen live on Guess the Number 1-1000, one guess before they found our 647:
+    "Sounds like you're close now. Good bisection on your side..." """
+
+    def test_confirmations_of_their_progress_are_dropped(self):
+        chat = policy("guessing", hidden_information=True)
+        for text in [
+            "Sounds like you're close now. Good bisection on your side.",
+            "You are getting warmer, keep going.",
+            "Almost there, one more guess.",
+            "Nice guess, that was close.",
+            "You're way off, try again.",
+            "Not far now.",
+            "You are on the right track with that range.",
+        ]:
+            line = chat.finalize(text, action="guess 500", observation=GUESS_OBS)
+            self.assertNotEqual(line, text, text)
+            for word in ("close", "warm", "bisection", "almost", "way off", "not far", "right track"):
+                self.assertNotIn(word, line.lower(), text)
+
+    def test_rest_of_the_line_survives(self):
+        chat = policy("guessing", hidden_information=True)
+        line = chat.finalize("You're close now. My own search is nearly done, hurry up.", action="guess 500", observation=GUESS_OBS)
+        self.assertEqual(line, "My own search is nearly done, hurry up.")
+
+    def test_pressure_about_our_own_search_is_allowed(self):
+        chat = policy("guessing", hidden_information=True)
+        for text in ["I am closing in on yours fast.", "Two more guesses and I have your number.", "Your claim changes nothing for me."]:
+            self.assertEqual(chat.finalize(text, action="guess 500", observation=GUESS_OBS), text)
+
+    def test_other_families_are_untouched(self):
+        text = "Nice guess, but the board says otherwise."
+        self.assertEqual(policy("think_ahead").finalize(text, action="A1", legal=["A1", "B2"]), text)
+
+    def test_bank_lines_pass_their_own_gate(self):
+        from harness import chatpolicy
+        chat = policy("guessing", hidden_information=True)
+        for line in chatpolicy._BANK["guessing"]:
+            self.assertEqual(chat.coherent(line), line)
+
+
+class LazyAliasTests(unittest.TestCase):
+    def test_subject_named_only_in_the_first_observation(self):
+        old = config.MEMORY_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            config.MEMORY_DIR = tmp
+            try:
+                spec = Spec(game_id="g", family="guardrails")
+                chat = ChatPolicy(spec, seed="t")
+                ready = FakeGateway(text="Good luck.")
+                decide.decide_ready(gateway=ready, spec=spec, playbook="", chat_policy=chat,
+                                    msg={"rules": "A quiz. A forbidden subject is given on your first turn.", "chat": []},
+                                    deadline=20.0)
+                self.assertEqual(chat.aliases(), [])  # nothing named yet: nothing asked, nothing marked done
+
+                class TurnGateway(FakeGateway):
+                    def ask(self, system, user, **kwargs):
+                        self.prompts.append(system + "\n---\n" + user)
+                        if "other names" in system:
+                            return json.dumps({"aliases": ["ananas", "🍍"]})
+                        return json.dumps({"intent": "decline", "action": "answer I cannot say that", "chat": "In Romanian that is ananas!"})
+
+                gateway = TurnGateway()
+                msg = {"observation": "Forbidden subject (never mention it): pineapple\nQuestion 1: which fruit?",
+                       "legal_actions": None, "chat": [], "turn": 1, "seat": 0}
+                first = decide.decide_turn(gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"),
+                                           chat_policy=chat, msg=msg, rules="A quiz.", deadline=12.0)
+                self.assertIn("ananas", chat.aliases())
+                self.assertNotIn("ananas", first.chat.lower())
+                self.assertIn("ananas", gateway.prompts[-1])  # the model is told the other names too
+                calls = len(gateway.prompts)
+                decide.decide_turn(gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"),
+                                   chat_policy=chat, msg={**msg, "turn": 3}, rules="A quiz.", deadline=12.0)
+                self.assertEqual(len(gateway.prompts), calls + 1)  # one decision call, no second alias call
+            finally:
+                config.MEMORY_DIR = old
+
+
+class DealAuditTests(unittest.TestCase):
+    """Seen in tg_deals: the model accepted 'opponent keeps 68 of 80' with a walk-away value of 30."""
+
+    OBS = ("SPLIT THE POT. You are Player 0.\nYour private walk-away value: 30\nCurrent pot: 80 coins.\n"
+           "Offers so far:\n  1. you offered to keep 60\n  2. opponent offered to keep 68\n"
+           'It is YOUR turn: "offer <n>" with n from 0 to 80, or "accept", or "walk".')
+
+    class Gateway(FakeGateway):
+        def __init__(self, audit):
+            super().__init__()
+            self.audit = audit
+            self.thinking: list[str] = []
+
+        def ask(self, system, user, **kwargs):
+            self.prompts.append(system + "\n---\n" + user)
+            if "audit one move" in system:
+                self.thinking.append(kwargs.get("thinking", "disabled"))
+                return json.dumps(self.audit)
+            return json.dumps({"intent": "close it", "action": "accept", "chat": "Deal, let us lock it in."})
+
+    def play(self, audit, family="deals"):
+        spec = Spec(game_id="g", family=family, hidden_information=True)
+        gateway = self.Gateway(audit)
+        decision = decide.decide_turn(
+            gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"), chat_policy=ChatPolicy(spec, seed="t"),
+            msg={"observation": self.OBS, "legal_actions": None, "chat": [opp("Accept now, you promised!")], "turn": 3, "seat": 0},
+            rules="SPLIT THE POT. offer <n> / accept / walk. Higher surplus wins.", deadline=15.0)
+        return decision, gateway
+
+    def test_acceptance_below_walk_away_is_replaced(self):
+        decision, gateway = self.play({"mine": 12, "walk_away": 30, "theirs": 68, "verdict": "reject", "better_action": "offer 50"})
+        self.assertEqual(decision.action, "offer 50")
+        self.assertEqual(decision.source, "audit")
+        self.assertNotIn("lock it in", decision.chat)  # the line about a deal we refused is gone
+        self.assertEqual(gateway.thinking, ["enabled"])
+
+    def test_numbers_overrule_a_wrong_ok(self):
+        decision, _ = self.play({"mine": 12, "walk_away": 30, "theirs": 68, "verdict": "ok", "better_action": "offer 55"})
+        self.assertEqual(decision.action, "offer 55")
+
+    def test_good_deal_is_accepted(self):
+        decision, _ = self.play({"mine": 55, "walk_away": 30, "theirs": 25, "verdict": "ok", "better_action": ""})
+        self.assertEqual(decision.action, "accept")
+        self.assertEqual(decision.source, "model")
+
+    def test_audit_never_swaps_one_acceptance_for_another(self):
+        decision, _ = self.play({"mine": 12, "walk_away": 30, "verdict": "reject", "better_action": "accept"})
+        self.assertEqual(decision.action, "accept")  # no usable replacement: the move stands, nothing invented
+
+    def test_other_families_are_not_audited(self):
+        _, gateway = self.play({"verdict": "reject", "better_action": "offer 50"}, family="bluff")
+        self.assertEqual(gateway.thinking, [])
 
 
 class ParseTests(unittest.TestCase):
