@@ -10,6 +10,7 @@ WORKDIR /bot
 
 COPY main.py ./
 COPY harness ./harness
+COPY logo.jpg /logo.jpg
 
 # No arguments: the arena runs `docker run -i --rm <image>` (rule 5.2).
 CMD ["python", "-u", "main.py"]
