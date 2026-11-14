@@ -190,13 +190,24 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
     call_timeout = min(180.0, max(20.0, budget_seconds * 0.55))
 
-    data = gateway.ask_json(
-        _SPEC_SYSTEM,
-        _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id), variants=_variant_blob(variants)),
-        max_tokens=1600,
-        timeout=call_timeout,
-        temperature=0.2,
-    )
+    # Everything else in prep is built on this call. If the gateway is busy or down for a moment, prep must
+    # not give up in under a second with 600 on the clock (seen in the lab: every call refused with 429, prep
+    # "done" in 0.9 s with nothing built). Try again with growing waits while a third of the clock is left.
+    data = None
+    for attempt, wait in enumerate(config.PREP_SPEC_WAITS + (None,), start=1):
+        data = gateway.ask_json(
+            _SPEC_SYSTEM,
+            _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id), variants=_variant_blob(variants)),
+            max_tokens=1600,
+            timeout=call_timeout,
+            temperature=0.2,
+        )
+        left = seconds - (time.time() - started)
+        if data or wait is None or not gateway.available or left < max(seconds / 3.0, wait + 60.0):
+            break
+        log(kv(prep="spec call failed, waiting to try again", attempt=attempt, wait=wait, left=round(left)))
+        time.sleep(wait)
+        call_timeout = min(call_timeout, max(20.0, (seconds - (time.time() - started)) * 0.3))
     if data:
         spec = Spec.from_dict({**data, "game_id": game_id}, fp)
         spec.source = "prep"
