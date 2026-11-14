@@ -148,8 +148,9 @@ def _enforce_blotto_format(
     m_res = _RESERVE_SOLDIERS_RE.search(observation or "")
     m_k = _K_NUMBERS_RE.search(combined)
     m_bf = _BFIELD_VALUES_RE.search(observation or "")
+    f_eq = re.findall(r"\bF(\d+)\s*=\s*(\d+)", observation or "", re.IGNORECASE)
 
-    if not m_exact and not m_res and not (m_k and m_bf):
+    if not m_exact and not m_res and not (m_k and m_bf) and not f_eq:
         return None
 
     k_fields = 0
@@ -157,12 +158,21 @@ def _enforce_blotto_format(
         k_fields = int(m_exact.group(2))
     elif m_k:
         k_fields = int(m_k.group(1))
-    if m_bf:
+    if f_eq:
+        k_fields = len(f_eq)
+    elif m_bf:
         bf_vals = [int(x) for x in m_bf.group(1).split() if x.strip().isdigit()]
         if bf_vals:
             k_fields = len(bf_vals)
     if k_fields <= 0:
         return None
+
+    if not candidate:
+        from .solver_simul import _propose_blotto
+
+        solved = _propose_blotto(observation or "", rules or "", 0, 1)
+        if solved:
+            return solved
 
     exact_budget: int | None = int(m_exact.group(1)) if m_exact and not m_res else None
     max_reserve: int | None = int(m_res.group(1)) if m_res else None

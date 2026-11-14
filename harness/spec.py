@@ -20,11 +20,11 @@ FAMILIES = (
 )
 
 _FAMILY_HINTS = {
-    "bluff": ("bluff", "bet", "raise", "fold", "wager", "pot", "chips", "hidden card", "odds"),
+    "bluff": ("bluff", "bet", "raise", "fold", "wager", "pot", "chips", "hidden card", "odds", "poker", "leduc", "kuhn", "liar"),
     "deals": ("offer", "accept", "reject", "negotiat", "auction", "bid", "price", "split", "deal"),
-    "read_opponent": ("simultaneous", "at the same time", "both players choose", "mixed strateg"),
-    "guessing": ("guess", "higher", "lower", "feedback", "secret number"),
-    "think_ahead": ("board", "row", "column", "diagonal", "capture", "piece", "move", "legal"),
+    "read_opponent": ("simultaneous", "at the same time", "both players choose", "mixed strateg", "blotto", "battlefield"),
+    "guessing": ("guess", "higher", "lower", "feedback", "secret number", "wordle", "secret word"),
+    "think_ahead": ("board", "row", "column", "diagonal", "capture", "piece", "move", "legal", "connect four"),
     "truth": ("document", "passage", "question", "unknown", "dossier", "quote", "source"),
     "guardrails": ("forbidden", "never mention", "must not say", "do not mention", "banned"),
 }
