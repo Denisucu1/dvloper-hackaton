@@ -53,7 +53,7 @@ _BANK = {
         "Narrowing it down. Your turn.",
         "I have a good feeling about this range.",
         "Feedback is all I need. Keep going.",
-        "You are colder than you think.",
+        "My search is going better than yours looks.",
     ],
     "think_ahead": [
         "I have seen this position before.",
@@ -119,8 +119,8 @@ _TACTICS = {
         ("commit-feint", "Announce a commitment loudly so they best-respond to a move you are not making."),
     ],
     "guessing": [
-        ("misdirect", "Hint, falsely or uselessly, about where your secret is. Give no true information about it."),
-        ("tempo", "Sound close to the answer so they rush instead of narrowing down efficiently."),
+        ("misdirect", "Hint, falsely or uselessly, about where your secret is. Give no true information about it, and never say how near or far their guesses are."),
+        ("tempo", "Sound as if YOU are about to find THEIR secret, so they rush. Say nothing at all about their progress toward yours."),
         ("doubt", "Cast doubt on the pattern they think they see in the feedback."),
     ],
     "think_ahead": [
@@ -276,6 +276,20 @@ _PLAN_TALK = re.compile(
 )
 
 
+# "Sounds like you're close now. Good bisection on your side": seen live one guess before they found our
+# number. Any comment on how near or far the opponent is from our secret is information they did not have.
+_PROGRESS_TALK = re.compile(
+    r"(?i)\b(you(?:'re| are|r)?\s+(?:\w+\s+){0,2}(?:close|closer|warm|warmer|hot|hotter|near|nearer|cold|colder|"
+    r"almost|nearly|narrowing|zeroing|homing|on the right track|on track|way off|far off|nowhere near|"
+    r"miles (?:off|away)|getting there)|"
+    r"(?:so|very|pretty|too|that'?s|that was|this is|not) (?:close|warm|near|cold|far)|"
+    r"(?:getting|got) (?:close|closer|warm|warmer|colder|hotter|there)|"
+    r"close (?:now|one|call|guess)|almost (?:there|got|had)|nearly (?:there|got|had)|"
+    r"(?:good|nice|great|solid|smart|sharp|clever|decent|fine) (?:bisection|guess|guessing|search|searching|narrowing|read|deduction|work)|"
+    r"right track|not far|warmer|colder|bisection|binary search)\b"
+)
+
+
 def _shape(token: str) -> str:
     return re.sub(r"\d", "D", re.sub(r"[A-Za-z]", "L", token))
 
@@ -393,7 +407,7 @@ class ChatPolicy:
         self._forbidden: list[tuple[str, list[re.Pattern[str]]]] = []
         self._learned: set[int] = set()
         self._aliases: list[tuple[str, list[re.Pattern[str]]]] = []  # other names of the subject: chat only
-        self.aliases_done = False
+        self.aliases_asked: set[str] = set()  # subjects whose other names were already looked up
         for subject in self.spec.forbidden_subjects:
             self._add_forbidden(str(subject))
 
@@ -643,12 +657,15 @@ class ChatPolicy:
         if not text:
             return text
         board_game = self.spec.family == "think_ahead"
+        secret_game = self.spec.family == "guessing" or self.spec.hidden_information
         kept = []
         for sentence in _sentences(text):
             if other_moves_named(sentence, legal, action):
                 continue
             if board_game and _PLAN_TALK.search(sentence):
                 continue
+            if secret_game and _PROGRESS_TALK.search(sentence):
+                continue  # never tell them how their search for our secret is going
             kept.append(sentence)
         result = " ".join(kept)
         if result != text:
@@ -674,7 +691,7 @@ class ChatPolicy:
         elif text and (self.nonce in text or "UNTRUSTED-CHAT" in text.upper()):
             reason = "prompt leakage"
         elif len(text) < 4:
-            reason = "incoherent with the move" if self.last_trim else ("empty" if not text else "too short")
+            reason = "incoherent or revealing" if self.last_trim else ("empty" if not text else "too short")
         self.last_block_reason = reason
         if not reason:
             return text
