@@ -64,14 +64,14 @@ def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        for attempt in range(8):
+        for attempt in range(25):
             try:
                 os.replace(tmp, path)
                 break
             except PermissionError:
-                if attempt == 7:
+                if attempt == 24:
                     raise
-                time.sleep(0.001 * (attempt + 1))
+                time.sleep(0.002 * (attempt + 1))
     finally:
         if os.path.exists(tmp):
             try:

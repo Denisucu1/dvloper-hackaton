@@ -209,6 +209,9 @@ class Searcher:
 
 
 WIDE_ACTIONS = 20
+# Alpha-beta has no root move ordering: on a 63-action board it spends the whole budget expanding every
+# root move at ply one and never deepens. Rank the root once with a cheap one-ply score and keep this many.
+WIDE_ROOT_ACTIONS = 24
 
 
 def _safe_terminal(model: Any) -> bool:
@@ -570,6 +573,47 @@ def tactical_root(model: Any, seat: int, actions: list[str], branch: int = 200) 
     return None, safe or list(actions[:branch])
 
 
+def _one_ply_value(model: Any, seat: int, action: str) -> float | None:
+    """Terminal score if this action ends the game, else the model's evaluate() after it. None on failure."""
+    try:
+        child = model.clone()
+        child.apply(seat, action)
+    except Exception:  # noqa: BLE001
+        return None
+    if _safe_terminal(child):
+        return _score(child, seat)
+    return _heuristic(child, seat)
+
+
+def root_shortlist(model: Any, seat: int, actions: list[str],
+                   limit: int = WIDE_ROOT_ACTIONS) -> list[str]:
+    """Rank root actions by one cheap ply and keep the best `limit`; the full list when ordering is useless.
+
+    `Searcher` has no root ordering of its own, so a wide board (63 legal actions) spends the whole clock
+    before it can complete the next ply. One clone + apply + score per action costs a fraction of that and
+    selects the moves the first ply would explore anyway. Ties break on the action string, so the shortlist
+    is deterministic.
+
+    If the ranking tells us nothing (no action can be scored, or every action scores the same) we return the
+    full list unchanged: guessing an ordering there would silently discard the only move that wins.
+    """
+    if not actions:
+        return []
+    if len(actions) <= limit:
+        return list(actions)
+    scored: list[tuple[float, str]] = []
+    for action in actions:
+        value = _one_ply_value(model, seat, action)
+        if value is not None:
+            scored.append((value, action))
+    if not scored:
+        return list(actions)
+    if len({round(value, 9) for value, _ in scored}) < 2:
+        return list(actions)  # a flat heuristic cannot rank: keep everything rather than keep alphabetics
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [action for _, action in scored[:limit]]
+
+
 def route_for(model: Any, seat: int) -> str:
     """Which searcher will run, and why. Exposed so logs and tests can prove the routing."""
     if model is None:
@@ -587,7 +631,7 @@ def route_for(model: Any, seat: int) -> str:
 
 def best_action_meta(model: Any, seat: int, seconds: float = 0.8, max_depth: int = 8) -> dict:
     """`best_action` plus the routing decision and why it produced no move (or which search ran)."""
-    meta = {"action": None, "value": DRAW, "route": "none", "depth": 0}
+    meta = {"action": None, "value": DRAW, "route": "none", "depth": 0, "root_actions": 0}
     if model is None:
         return meta
     try:
@@ -606,7 +650,12 @@ def best_action_meta(model: Any, seat: int, seconds: float = 0.8, max_depth: int
             meta.update(action=win, value=1.0, route="alphabeta+tactical", depth=1)
             return meta
         meta["route"] = "alphabeta"
-        searcher = Searcher(model, seat, seconds, max_depth, root_actions=safe)
+        root_actions = safe
+        if len(safe) > WIDE_ACTIONS:
+            # Root-only widening fix: rank once, then let iterative deepening spend the clock on depth.
+            root_actions = root_shortlist(model, seat, safe)
+        meta["root_actions"] = len(root_actions)
+        searcher = Searcher(model, seat, seconds, max_depth, root_actions=root_actions)
         action, value = searcher.best()
         meta.update(action=action, value=value, depth=searcher.depth_reached)
         return meta

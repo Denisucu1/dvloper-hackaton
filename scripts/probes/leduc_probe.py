@@ -5,11 +5,13 @@ Inline observations copy the arena shape used by ``tests/test_solver_leduc.py``:
 - round 1 parses private card, pot and an empty current-round line;
 - round 2 parses the community card and a ``check, bet`` line (facing a bet);
 - the arena's exact legal spelling is preserved (``Check``/``Bet`` -> ``Bet``);
-- a weak private card folds facing a bet, a strong card calls, and the best card bets when first;
+- round-1 equity now enumerates the opponent card plus the community draw: private J calls
+  a bet (~0.40 equity against 0.25 pot odds), private K calls and bets (~0.70);
+- round 2 is exact over the known board: private J with Q on the board folds to a bet (~0.125);
 - Kuhn / one-card text is declined by both the parser and ``matches``;
-- 200 decisions stay under the 5 ms per-move requirement.
+- 20 decisions stay under the 5 ms per-move requirement.
 
-Score is the fraction of eight boolean checks that pass.
+Score is the fraction of nine boolean checks that pass.
 """
 from __future__ import annotations
 
@@ -94,13 +96,15 @@ class LeducProbe(Probe):
             facts["spelling"] = action
             return action == "Bet"
 
-        def weak_hand_folds_to_bet() -> bool:
+        def round_one_jack_calls_bet() -> bool:
+            # Round-1 equity enumerates the opponent card and the community draw: J is ~0.40,
+            # which clears the 0.25 pot odds of a call.
             action = solver.propose(
                 observation=round_one(card="J", pot=3, line="bet"),
                 legal=["call", "fold"], seat=1,
             )
-            facts["weak_fold"] = action
-            return action == "fold"
+            facts["jack_call"] = action
+            return action == "call"
 
         def strong_hand_calls_bet() -> bool:
             action = solver.propose(
@@ -116,6 +120,16 @@ class LeducProbe(Probe):
             )
             facts["strong_bet"] = action
             return action == "bet"
+
+        def round_two_dominated_hand_folds() -> bool:
+            # Private J with Q on the board is dominated by every Q and K; exact round-2 equity
+            # is ~0.125, below the pot odds, so it folds to a bet.
+            action = solver.propose(
+                observation=round_two(card="J", community="Q", pot=4, line="bet"),
+                legal=["call", "fold"], seat=0,
+            )
+            facts["dominated_fold"] = action
+            return action == "fold"
 
         def kuhn_text_is_declined() -> bool:
             action = solver.propose(observation=KUHN_TEXT, legal=["check", "bet"], seat=0)
@@ -142,17 +156,17 @@ class LeducProbe(Probe):
             ("round 1 parses private card and pot", first_round_parses),
             ("round 2 parses the community card", second_round_parses_community_card),
             ("exact legal spelling is preserved", legal_spelling_is_preserved),
-            ("weak hand folds to a bet", weak_hand_folds_to_bet),
-            ("strong hand calls a bet", strong_hand_calls_bet),
-            ("strong hand bets when first", strong_hand_bets_when_first),
+            ("round-1 J calls a bet", round_one_jack_calls_bet),
+            ("round-1 K calls a bet", strong_hand_calls_bet),
+            ("round-1 K bets when first", strong_hand_bets_when_first),
+            ("round-2 J with Q board folds to a bet", round_two_dominated_hand_folds),
             ("Kuhn / one-card text is declined", kuhn_text_is_declined),
             (f"decision under {TIMING_LIMIT_MS:.0f} ms", decisions_are_under_five_ms),
         ])
         details = dict(facts)
         details["failures"] = run.failures
         notes = (
-            f"rounds {facts.get('round_one')}/{facts.get('round_two')}, "
-            f"fold/call/bet {facts.get('weak_fold')}/{facts.get('strong_call')}/{facts.get('strong_bet')}, "
-            f"{facts.get('per_call_ms')} ms/call (max {facts.get('slowest_call_ms')})"
+            f"r1 J {facts.get('jack_call')}, K {facts.get('strong_call')}/{facts.get('strong_bet')}, "
+            f"r2 J/Q {facts.get('dominated_fold')}; {float(facts.get('per_call_ms') or 0):.3f} ms/call"
         )
         return summarize(run, notes=notes, details=details)

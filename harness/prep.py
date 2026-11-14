@@ -223,6 +223,7 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     # "done" in 0.9 s with nothing built). Try again with growing waits while a third of the clock is left.
     spec_user = _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id),
                                   variants=_variant_blob(variants))
+    failures_before = int(getattr(gateway, "failures", 0) or 0)
     data = gateway.ask_json(
         _SPEC_SYSTEM,
         spec_user,
@@ -245,24 +246,30 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
             )
             if data:
                 notes.append("spec from model (retry)")
-    if not data and getattr(gateway, "failures", 0) > 0:
-        for attempt, wait in enumerate(config.PREP_SPEC_WAITS, start=2):
-            left = seconds - (time.time() - started)
-            if not gateway.available or left < max(seconds / 3.0, wait + 60.0):
-                break
-            log(kv(prep="spec call failed, waiting to try again", attempt=attempt, wait=wait, left=round(left)))
-            time.sleep(wait)
-            call_timeout = min(call_timeout, max(20.0, (seconds - (time.time() - started)) * 0.3))
-            data = gateway.ask_json(
-                _SPEC_SYSTEM + "\nReturn ONLY the JSON object, with no prose before or after it.",
-                spec_user,
-                max_tokens=2000,
-                timeout=call_timeout,
-                temperature=0.0,
-            )
-            if data:
-                notes.append("spec from model (retry)")
-                break
+    # A refused gateway (429 / 5xx / timeout) is busy, not wrong: keep trying with growing waits while a
+    # third of the clock is left, so prep never finishes empty in under a second (seen in the lab: every
+    # call refused with 429, prep "done" in 0.9 s with a regex spec and no playbook). A call that came back
+    # with prose but no JSON is answered by the stricter immediate retry above and then by the fallback:
+    # waiting cannot fix a model that already spoke, so the waits need a recorded transport failure.
+    refused = int(getattr(gateway, "failures", 0) or 0) > failures_before
+    for attempt, wait in enumerate(config.PREP_SPEC_WAITS, start=1):
+        if data or not refused or not gateway.available or not gateway.affordable:
+            break
+        left = seconds - (time.time() - started)
+        if left <= max(seconds / 3.0, wait + 60.0):
+            break
+        log(kv(prep="spec call failed, waiting to try again", attempt=attempt, wait=wait, left=round(left)))
+        time.sleep(wait)
+        left = seconds - (time.time() - started)
+        # The retried call must still fit inside what is left of the prep clock.
+        call_timeout = min(call_timeout, max(1.0, left - config.SAFETY))
+        data = gateway.ask_json(
+            _SPEC_SYSTEM,
+            spec_user,
+            max_tokens=1600,
+            timeout=call_timeout,
+            temperature=0.2,
+        )
     if data:
         spec = Spec.from_dict({**data, "game_id": game_id}, fp)
         spec.source = "prep"

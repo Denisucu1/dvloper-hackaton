@@ -10,8 +10,16 @@ import re
 import time
 from typing import Iterable
 
-_CONNECT_HEADER_RE = re.compile(
+_CONNECT_HEADER_PAREN_RE = re.compile(
     r"CONNECT\s+FOUR\s*\(\s*(\d+)x(\d+)\s*,\s*connect\s+(\d+)\s*\)",
+    re.IGNORECASE,
+)
+_CONNECT_HEADER_DASH_RE = re.compile(
+    r"CONNECT\s+FOUR\s*[-\u2013\u2014]\s*(\d+)x(\d+)\s*,\s*connect\s+(\d+)",
+    re.IGNORECASE,
+)
+_PLAY_AS_RE = re.compile(
+    r"You\s+are\s+Player\s+\d+\s+and\s+play\s+([XO])",
     re.IGNORECASE,
 )
 _ROLE_RE = re.compile(
@@ -19,53 +27,131 @@ _ROLE_RE = re.compile(
     re.IGNORECASE,
 )
 _OPEN_COLS_RE = re.compile(
-    r"Open\s+columns:\s*([0-9,\s]+)",
+    r"Open\s+columns?\s*:\s*([^\n]+)",
     re.IGNORECASE,
 )
-_ROW_LINE_RE = re.compile(r"^\s*\d+\s*\|\s*([.XO\s]+)$")
+_ROW_LINE_RE = re.compile(r"^\s*(\d+)\s*\|?\s*([.XO\s]+?)\s*$")
+_COL_HEADER_RE = re.compile(r"^\s*([A-Za-z](?:\s+[A-Za-z])+)\s*$")
 
 
 def parse_connect_k(observation: str) -> dict | None:
-    """Parse a Connect-K board observation into `(rows, cols, k, board, me, opp, open_cols)`."""
+    """Parse a Connect-K board observation into `(rows, cols, k, board, me, opp, open_cols)`.
+
+    Accepts the lab header `CONNECT FOUR (RxC, connect K)` and the arena header
+    `CONNECT FOUR - CxR, connect K` (arena label is columns x rows). Board rows may be
+    printed with or without a `|` separator, and columns may be numeric or letters.
+    """
     text = observation or ""
-    m_hdr = _CONNECT_HEADER_RE.search(text)
+    m_hdr = _CONNECT_HEADER_PAREN_RE.search(text)
+    header_form = "paren"
+    if not m_hdr:
+        m_hdr = _CONNECT_HEADER_DASH_RE.search(text)
+        header_form = "dash"
     if not m_hdr:
         return None
-    rows = int(m_hdr.group(1))
-    cols = int(m_hdr.group(2))
+    dim_a = int(m_hdr.group(1))
+    dim_b = int(m_hdr.group(2))
     k = int(m_hdr.group(3))
-    if rows < 3 or cols < 3 or k < 3 or rows > 12 or cols > 12:
+    if k < 3:
         return None
 
     me = "X"
     opp = "O"
+    m_play = _PLAY_AS_RE.search(text)
     m_role = _ROLE_RE.search(text)
-    if m_role:
+    if m_play:
+        me = m_play.group(1).upper()
+        opp = "O" if me == "X" else "X"
+    elif m_role:
         tok = (m_role.group(1) or m_role.group(3) or "X").upper()
         me = tok
         opp = "O" if me == "X" else "X"
 
-    board: list[list[str]] = []
+    board_rows: list[tuple[int, list[str]]] = []
+    col_header_tokens: list[str] = []
     for raw_line in text.splitlines():
+        m_col = _COL_HEADER_RE.match(raw_line)
+        if m_col:
+            tokens = m_col.group(1).split()
+            if len(tokens) >= 3 and len({t.upper() for t in tokens}) == len(tokens):
+                col_header_tokens = tokens
+            continue
         m_row = _ROW_LINE_RE.match(raw_line)
         if not m_row:
             continue
-        cells = [c for c in m_row.group(1).split() if c in (".", "X", "O")]
-        if len(cells) == cols:
-            board.append(cells)
+        cells = [c for c in m_row.group(2).split() if c in (".", "X", "O")]
+        if cells:
+            board_rows.append((int(m_row.group(1)), cells))
 
-    if len(board) != rows:
+    if not board_rows:
+        return None
+    widths = {len(cells) for _, cells in board_rows}
+    if len(widths) != 1:
+        return None
+    parsed_rows = len(board_rows)
+    parsed_cols = widths.pop()
+
+    # Prefer the orientation consistent with the parsed board; fall back to each
+    # header's own convention (parentheses = RxC, arena dash = CxR).
+    if parsed_rows == dim_a and parsed_cols == dim_b:
+        rows, cols = dim_a, dim_b
+    elif parsed_rows == dim_b and parsed_cols == dim_a:
+        rows, cols = dim_b, dim_a
+    elif header_form == "paren":
+        rows, cols = dim_a, dim_b
+    else:
+        rows, cols = dim_b, dim_a
+    if rows != parsed_rows or cols != parsed_cols:
+        return None
+    if rows < 3 or cols < 3 or rows > 12 or cols > 12:
         return None
 
+    # Row labels are 1-based with row 1 at the top. If the board is printed bottom-up,
+    # use the labels to restore top-to-bottom order instead of trusting print order.
+    labels = [label for label, _ in board_rows]
+    if len(set(labels)) == len(labels) and all(1 <= label <= rows for label in labels):
+        board_rows.sort(key=lambda item: item[0])
+    board = [cells for _, cells in board_rows]
+
+    col_tokens: dict[int, str] = {}
+    if len(col_header_tokens) == cols:
+        for c, token in enumerate(col_header_tokens):
+            col_tokens[c] = token
+
     open_cols: list[int] = []
+    letter_mode = False
+    saw_open_token = False
     m_open = _OPEN_COLS_RE.search(text)
     if m_open:
-        for tok in re.findall(r"\d+", m_open.group(1)):
-            c = int(tok)
-            if 0 <= c < cols and board[0][c] == ".":
-                open_cols.append(c)
+        for part in re.split(r"[,;]", m_open.group(1)):
+            part = part.strip()
+            if not part:
+                continue
+            letter_m = re.search(r"\bdrop\s+([A-Za-z])\b", part, re.I)
+            if not letter_m:
+                letter_m = re.fullmatch(r"([A-Za-z])", part)
+            if letter_m:
+                saw_open_token = True
+                letter = letter_m.group(1)
+                c = ord(letter.upper()) - ord("A")
+                if 0 <= c < cols:
+                    letter_mode = True
+                    col_tokens.setdefault(c, letter)
+                    if board[0][c] == ".":
+                        open_cols.append(c)
+                continue
+            num_m = re.search(r"\b(\d+)\b", part)
+            if num_m:
+                saw_open_token = True
+                c = int(num_m.group(1))
+                if 0 <= c < cols and board[0][c] == ".":
+                    open_cols.append(c)
+    open_cols = list(dict.fromkeys(open_cols))
     if not open_cols:
         open_cols = [c for c in range(cols) if board[0][c] == "."]
+    if not saw_open_token:
+        # No explicit open list: a letter column header is the only spelling hint we have.
+        letter_mode = bool(col_tokens)
 
     return {
         "rows": rows,
@@ -75,9 +161,19 @@ def parse_connect_k(observation: str) -> dict | None:
         "me": me,
         "opp": opp,
         "open_cols": open_cols,
+        "col_tokens": col_tokens,
+        "letter_mode": letter_mode,
     }
 
 
+def _drop_action(state: dict, col: int) -> str:
+    """Format a drop in the observation's own column spelling (letters or numbers)."""
+    if state.get("letter_mode"):
+        token = (state.get("col_tokens") or {}).get(col)
+        if token is None:
+            token = chr(ord("A") + col)
+        return f"drop {token}"
+    return f"drop {col}"
 def _drop_row(board: list[list[str]], rows: int, col: int) -> int:
     for r in range(rows - 1, -1, -1):
         if board[r][col] == ".":
@@ -193,7 +289,11 @@ class ConnectKSolver:
         open_cols: list[int] = state["open_cols"]
 
         avoid_set = {str(a).strip().lower() for a in (avoid or ()) if a}
-        valid_cols = [c for c in open_cols if f"drop {c}" not in avoid_set]
+        valid_cols = [
+            c
+            for c in open_cols
+            if _drop_action(state, c).lower() not in avoid_set and f"drop {c}" not in avoid_set
+        ]
         if not valid_cols:
             valid_cols = list(open_cols)
         if not valid_cols:
@@ -211,7 +311,7 @@ class ConnectKSolver:
             won = _check_win_from(board, rows, cols, k, r, c, me)
             board[r][c] = "."
             if won:
-                return f"drop {c}"
+                return _drop_action(state, c)
 
         # 2. Immediate block of opponent's winning move
         must_block: list[int] = []
@@ -225,7 +325,7 @@ class ConnectKSolver:
             if opp_wins:
                 must_block.append(c)
         if must_block:
-            return f"drop {must_block[0]}"
+            return _drop_action(state, must_block[0])
 
         # 3. Filter out moves that directly gift the opponent a win on the cell above
         safe_cols: list[int] = []
@@ -244,7 +344,7 @@ class ConnectKSolver:
 
         search_cols = safe_cols if safe_cols else ordered_cols
         if len(search_cols) == 1:
-            return f"drop {search_cols[0]}"
+            return _drop_action(state, search_cols[0])
 
         deadline = time.monotonic() + max(0.15, max_seconds)
         depth = 4 if cols <= 7 else 3
@@ -302,7 +402,7 @@ class ConnectKSolver:
                 best_val = sc
                 best_col = c
 
-        return f"drop {best_col}"
+        return _drop_action(state, best_col)
 
     def _propose_nim(
         self,

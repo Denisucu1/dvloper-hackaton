@@ -14,10 +14,15 @@ import json
 import sys
 import time
 
-from harness import actions, config, decide, memory, prep, watchdog
+from harness import config, decide, memory, prep, watchdog
 from harness.llm import Gateway
 from harness.log import kv, log, log_exc
 from harness.state import Session
+
+
+def _ready_timeout(study: float, elapsed: float) -> float:
+    """What is LEFT of the study clock for the work behind `ready`, never negative or zero."""
+    return max(2.0, float(study) - config.SAFETY - max(0.0, float(elapsed)))
 
 
 def emit(payload: dict) -> None:
@@ -38,8 +43,10 @@ def handle_prep(msg: dict, session: Session) -> dict:
 def handle_start(msg: dict, session: Session) -> dict:
     """A game begins: load the prepared variant, greet, answer `ready` inside the study clock."""
     session.gateway.configure(msg.get("llm"), cap=config.MATCH_BUDGET * config.MATCH_CONTAINER_SHARE)
+    # The study clock starts now, before memory/quick_spec: a cold start may already spend ~45 s of it.
     began = time.monotonic()
     session.begin_game(msg)
+    start_rules = session.rules
     study = float(msg.get("study_seconds") or 30)
     game_id = session.game_id
 
@@ -47,6 +54,9 @@ def handle_start(msg: dict, session: Session) -> dict:
     artifacts = prep.load_artifacts(game_id)
     if artifacts is not None:
         session.adopt(artifacts)
+        if start_rules:
+            # Prep covered every variant; the rules of the drawn variant are the authoritative ones.
+            session.rules = start_rules
     elif session.spec.game_id != game_id:
         session.cold_start(msg)
         if study >= 45 and session.gateway.affordable:
@@ -67,9 +77,7 @@ def handle_start(msg: dict, session: Session) -> dict:
         playbook=session.playbook,
         chat_policy=session.chat,
         msg=msg,
-        # What is LEFT of the study clock: a cold start may already have spent 45 s on the quick spec, and
-        # the work behind `ready` (chat plan, strategy brief) sizes itself on this number.
-        deadline=max(2.0, study - config.SAFETY - (time.monotonic() - began)),
+        deadline=_ready_timeout(study, time.monotonic() - began),
     )
     return {"type": "ready", "chat": chat}
 
@@ -132,7 +140,7 @@ def turn_fallback(msg: dict, session: Session) -> dict:
     game outright (rule 8.2). So we always answer, with the best legal move we can name.
     """
     legal = msg.get("legal_actions")
-    action = actions.choose_fallback(legal, session.avoid) or ""
+    action = decide.format_fallback(session.spec, str(msg.get("observation") or ""), legal, session.avoid) or "unknown"
     chat = session.chat.safe_line() if session.chat else "Your move."
     return {"type": "action", "action": action, "chat": chat or "Your move."}
 

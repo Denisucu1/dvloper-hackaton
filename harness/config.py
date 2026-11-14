@@ -103,6 +103,12 @@ RETRY_MIN_LEFT = float(os.environ.get("HARNESS_RETRY_MIN_LEFT", "4.0"))
 PREP_SPEC_WAITS = tuple(float(x) for x in os.environ.get("HARNESS_PREP_SPEC_WAITS", "5,15,30,45").split(",") if x)
 # Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
 CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
+# One retry on a busy gateway (429 / 5xx): how long to wait, and how much of the call's own timeout must
+# still be left for the retry to be worth making.
+RETRY_WAIT = float(os.environ.get("HARNESS_RETRY_WAIT", "1.2"))
+RETRY_MIN_LEFT = float(os.environ.get("HARNESS_RETRY_MIN_LEFT", "4.0"))
+# Prep: waits (seconds) between attempts of the spec call when the gateway gives nothing back.
+PREP_SPEC_WAITS = tuple(float(x) for x in os.environ.get("HARNESS_PREP_SPEC_WAITS", "5,15,30,45").split(",") if x)
 
 # Files, never directories, that hold per-game artifacts.
 ARTIFACT_SPEC = "spec.json"

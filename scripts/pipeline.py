@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""One-command testing pipeline: compile, unit tests, probes, protocol, game API, optional bench.
+"""One-command testing pipeline: compile, unit tests, probes, solver smoke, protocol, game API, optional bench.
 
 Run from the repo root:
 
     python3 scripts/pipeline.py                 # fast, offline, ~15 s
     python3 scripts/pipeline.py --bench         # + real arena matches and the gate
+    python3 scripts/pipeline.py --no-solvers    # skip the solver smoke stage
     python3 scripts/pipeline.py --json out.json # machine-readable result
 
-Every stage runs even if an earlier one failed; the summary at the end says what to fix. Exit code is 0
-only when every stage passed. No network is used unless --bench is given (arena matches call the gateway).
+The `probes` stage runs the component scorecard; `solvers` then plays one seeded random playout per
+arena variant and feeds every observation to the family solvers. Every stage runs even if an earlier
+one failed; the summary at the end says what to fix. Exit code is 0 only when every stage passed. No
+network is used unless --bench is given (arena matches call the gateway).
 """
 from __future__ import annotations
 
@@ -47,6 +50,10 @@ def stages(args) -> list[tuple[str, list[str], float]]:
         ("compile", [PY, "-m", "compileall", "-q", "main.py", "harness", "scripts", "tests"], 120),
         ("unit tests", [PY, "-m", "unittest", "discover", "-s", "tests"], 300),
         ("probes", [PY, "scripts/report.py", "--no-color"] + (["--fast"] if args.fast else []), 180),
+    ]
+    if not args.no_solvers:
+        plan.append(("solvers", [PY, "scripts/solver_smoke.py"], 120))
+    plan += [
         ("protocol", [PY, "scripts/smoke.py"], 120),
         ("games", [PY, "scripts/game_smoke.py", "--no-color"], 120),
         ("performance", [PY, "scripts/lab.py", "--quick"] + (["--verbose"] if args.verbose else []), 240),
@@ -70,6 +77,7 @@ def main() -> int:
     parser.add_argument("--best-of", type=int, default=1)
     parser.add_argument("--label", default="pipeline")
     parser.add_argument("--no-prep-trace", action="store_true")
+    parser.add_argument("--no-solvers", action="store_true", help="skip the solver smoke stage")
     parser.add_argument("--verbose", action="store_true", help="print each stage's full output")
     args = parser.parse_args()
 
@@ -88,8 +96,11 @@ def main() -> int:
 
     failed = [result for result in results if not result["ok"]]
     total = round(sum(result["seconds"] for result in results), 1)
+    slowest = max(results, key=lambda result: result["seconds"], default=None)
     print("-" * 78)
     print(f"  {len(results) - len(failed)}/{len(results)} stages passed in {total}s")
+    if slowest and slowest["seconds"] > 0:
+        print(f"  slowest stage: {slowest['name']} ({slowest['seconds']}s)")
     if failed:
         print("  FAILED:")
         for result in failed:
@@ -99,8 +110,15 @@ def main() -> int:
     print("=" * 78)
 
     if args.json:
+        payload = {
+            "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "stages": results,
+            "total_seconds": total,
+        }
+        if slowest:
+            payload["slowest"] = {"name": slowest["name"], "seconds": slowest["seconds"]}
         with open(args.json, "w", encoding="utf-8") as handle:
-            json.dump({"when": time.strftime("%Y-%m-%dT%H:%M:%S"), "stages": results}, handle, indent=1)
+            json.dump(payload, handle, indent=1)
     return 1 if failed else 0
 
 

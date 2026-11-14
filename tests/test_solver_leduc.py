@@ -14,7 +14,7 @@ if ARENA not in sys.path:
     sys.path.insert(0, ARENA)
 
 from arena.games.tg_leduc_probe import TestLeduc  # noqa: E402
-from harness.solver_leduc import LeducSolver, parse_leduc_observation  # noqa: E402
+from harness.solver_leduc import LeducSolver, _equity, parse_leduc_observation  # noqa: E402
 from harness.spec import Spec  # noqa: E402
 
 
@@ -87,12 +87,30 @@ class LeducPolicyTests(unittest.TestCase):
         )
         self.assertEqual(action, "bet")
 
-    def test_weak_private_card_folds_to_a_bet(self):
+    def test_weak_private_card_calls_a_bet_once_the_draw_counts(self):
+        # J vs a Q bet with the community card still to come is ~0.40, above the 0.25 pot odds:
+        # folding this was the measured mini_poker loss (0-1).
         action = self.solver.propose(
             observation=round_one(card="J", pot=3, line="bet"),
             legal=["call", "fold"], seat=1,
         )
+        self.assertEqual(action, "call")
+
+    def test_dominated_hand_still_folds_to_a_bet(self):
+        # Round two, J with a Q on the board: no draw left, only a J tie (~0.125).
+        action = self.solver.propose(
+            observation=round_two(card="J", community="Q", pot=3, line="bet"),
+            legal=["call", "fold"], seat=1,
+        )
         self.assertEqual(action, "fold")
+
+    def test_round_one_equity_enumerates_the_community_card(self):
+        jack = _equity("J", None)
+        king = _equity("K", None)
+        self.assertGreaterEqual(jack, 0.30)
+        self.assertLessEqual(jack, 0.55)
+        # Exact enumeration with ties split 0.5 gives J=0.40, Q=0.40, K=0.70.
+        self.assertGreaterEqual(king, 0.70)
 
     def test_strong_private_card_calls_a_bet(self):
         action = self.solver.propose(

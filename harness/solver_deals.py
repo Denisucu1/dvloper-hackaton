@@ -17,19 +17,35 @@ _DEFECT_WORDS = ("defect", "betray", "steal", "take", "cheat", "withhold", "keep
 _GAME_HINTS = ("deals", "pot", "bargain", "ultimatum", "negotiation", "dilemma", "trust", "auction")
 
 
+def _nearest_numeric_action(raw: str, legal: Sequence[str]) -> str | None:
+    """Return the legal item whose first number is closest to the number in `raw`."""
+    target_m = re.search(r"-?\d+", raw)
+    if not target_m:
+        return None
+    target = int(target_m.group(0))
+    best: str | None = None
+    best_distance: int | None = None
+    for item in legal:
+        item_m = re.search(r"-?\d+", str(item))
+        if not item_m:
+            continue
+        distance = abs(int(item_m.group(0)) - target)
+        if best_distance is None or distance < best_distance:
+            best = str(item)
+            best_distance = distance
+    return best
+
+
 class DealsSolver:
     def __init__(self) -> None:
         self.rules: str = ""
         self.spec: Spec | None = None
 
     def matches(self, game_id: str, spec: Spec | None = None) -> bool:
-        gid = (game_id or "").lower().strip()
-        # Keep synthetic unit-test dummy game_id="g" on the model+audit path in test_chat_arena.py
-        if gid in ("", "g"):
-            return False
         family = (spec.family if spec else "").lower()
         if family == "deals":
             return True
+        gid = (game_id or "").lower().strip()
         return any(tok in gid for tok in _GAME_HINTS)
 
     def configure(self, spec: Spec, rules: str = "", has_model: bool = False) -> None:
@@ -90,12 +106,26 @@ class DealsSolver:
         obs_turn = int(turn_m.group(1)) if turn_m else 1
         max_turns = int(turn_m.group(2)) if turn_m else 8
 
-        # Parse pot decay per turn from rules ("shrinking by 5 a turn") or infer from initial pot 100.
-        # Do not assume a decay of 5 when the rules do not say the pot shrinks.
+        # Parse pot decay per turn from rules ("shrinking by 5 a turn"). When the rules only
+        # say the pot shrinks, infer the decay from the *parsed* initial pot. Never assume 100.
         decay_m = re.search(r"shrink(?:ing|s)\s+by\s+(\d+)", rules or "", re.I)
+        initial_pot: int | None = None
+        for pattern in (
+            r"initial\s+pot\s*(?:of|:)?\s*(\d+)",
+            r"pot\s+of\s+(\d+)",
+            r"starts?\s+at\s+(\d+)",
+        ):
+            init_m = re.search(pattern, rules or "", re.I)
+            if init_m:
+                initial_pot = int(init_m.group(1))
+                break
+        rules_l = (rules or "").lower()
+        shrinks = "shrink" in rules_l or "decay" in rules_l
         if decay_m:
             decay = int(decay_m.group(1))
-        elif ("shrink" in (rules or "").lower() or "decay" in (rules or "").lower()) and obs_turn > 1 and cur_pot < 100:
+        elif shrinks and initial_pot is not None and obs_turn > 1:
+            decay = max(0, round((initial_pot - cur_pot) / (obs_turn - 1)))
+        elif shrinks and obs_turn > 1 and cur_pot < 100:
             decay = max(0, round((100 - cur_pot) / (obs_turn - 1)))
         else:
             decay = 0
@@ -157,7 +187,16 @@ class DealsSolver:
     def _fmt_deal_action(self, raw: str, legal: Sequence[str] | None) -> str | None:
         if not legal:
             return raw
-        return normalize(raw, list(legal)) or raw
+        normalized = normalize(raw, list(legal))
+        if normalized:
+            return normalized
+        # Fall back to the legal offer whose numeric value is closest to the target
+        # (e.g. raw "offer 56" with legal ["offer 50", "offer 60"] -> "offer 60").
+        nearest = _nearest_numeric_action(raw, legal)
+        if nearest is not None:
+            return nearest
+        # Nothing numeric to snap to: keep the raw action only if it normalizes.
+        return normalize(raw, list(legal))
 
     def _is_trust_dilemma(self, obs_l: str, legal: Sequence[str] | None) -> bool:
         if legal and len(legal) == 2:
@@ -194,8 +233,9 @@ class DealsSolver:
         cur_r = int(round_m.group(1)) if round_m else 1
         max_r = int(round_m.group(2)) if round_m else 1
 
-        # Backward induction: on the final round (or one-shot game), defecting strictly dominates
-        if round_m and cur_r >= max_r:
+        # Backward induction: on the final round (or a one-shot game with no round marker),
+        # defecting strictly dominates.
+        if not round_m or cur_r >= max_r:
             return defect_act
 
         opp_moves = re.findall(
@@ -216,6 +256,7 @@ class DealsSolver:
         return (
             "second-price" in rules_l
             or "second highest" in rules_l
+            or "second-highest" in rules_l
             or "vickrey" in rules_l
             or "first-price" in rules_l
         )
@@ -229,9 +270,9 @@ class DealsSolver:
         vals = re.findall(r"your\s+(?:private\s+)?(?:value|valuation)[^:\n]*:\s*(\d+)", observation, re.I)
         if len(vals) != 1:
             return None
-        val = int(vals[0])
+        val = int(vals)[0] if isinstance(vals, int) else int(vals[0])
         rules_l = (rules or "").lower()
-        if "second-price" in rules_l or "second highest" in rules_l or "vickrey" in rules_l:
+        if "second-price" in rules_l or "second highest" in rules_l or "second-highest" in rules_l or "vickrey" in rules_l:
             bid = val
         else:
             range_m = re.search(r"(\d+)\s+to\s+(\d+)", rules or "", re.I)
@@ -240,5 +281,8 @@ class DealsSolver:
 
         raw = f"bid {bid}"
         if legal:
-            return normalize(raw, list(legal))
+            normalized = normalize(raw, list(legal))
+            if normalized:
+                return normalized
+            return _nearest_numeric_action(raw, legal)
         return raw

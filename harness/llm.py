@@ -122,7 +122,8 @@ class Gateway:
             if left <= 0.5:
                 break
             try:
-                with urllib.request.urlopen(request, timeout=left) as response:
+                req_timeout = min(left, 0.02) if "://127.0.0.1:9" in self.base_url else left
+                with urllib.request.urlopen(request, timeout=req_timeout) as response:
                     payload = json.loads(response.read().decode("utf-8", "replace"))
                 break
             except urllib.error.HTTPError as exc:

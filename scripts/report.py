@@ -30,6 +30,9 @@ if ROOT not in sys.path:
 
 from scripts.probes import base  # noqa: E402
 from scripts.probes import registry, selected  # noqa: E402
+# Register the port probe alongside the package probes (kept here so the port can land independently
+# of scripts/probes/__init__.py; importing the module runs its @register decorator).
+from scripts.probes import port_probe  # noqa: E402,F401
 
 PASS_EPSILON = 1e-9
 COMPONENT_WIDTH = 18
