@@ -571,7 +571,19 @@ class DealAuditTests(unittest.TestCase):
 
     def test_audit_never_swaps_one_acceptance_for_another(self):
         decision, _ = self.play({"mine": 12, "walk_away": 30, "verdict": "reject", "better_action": "accept"})
-        self.assertEqual(decision.action, "accept")  # no usable replacement: the move stands, nothing invented
+        self.assertEqual(decision.action, "accept")  # no earlier offer of ours, no example: nothing is invented
+
+    def test_rejected_acceptance_with_no_alternative_repeats_our_last_demand(self):
+        # Seen in the lab: 38 for us, 62 for them, verdict reject, no better_action - and "accept" was played.
+        spec = Spec(game_id="g", family="deals", hidden_information=True)
+        gateway = self.Gateway({"offer_number": 62, "offer_number_is": "proposer", "total": 100, "walk_away": 33,
+                                "higher_gain_wins": True, "verdict": "reject", "better_action": ""})
+        decision = decide.decide_turn(
+            gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"), chat_policy=ChatPolicy(spec, seed="t"),
+            msg={"observation": self.OBS, "legal_actions": None, "chat": [], "turn": 4, "seat": 1, "_avoid": ["offer 57"]},
+            rules="SPLIT THE POT. offer <n> / accept / walk. Higher surplus wins.", deadline=15.0)
+        self.assertEqual(decision.action, "offer 57")
+        self.assertEqual(decision.source, "audit")
 
     def test_other_families_are_not_audited(self):
         _, gateway = self.play({"verdict": "reject", "better_action": "offer 50"}, family="bluff")

@@ -888,6 +888,15 @@ def decide_turn(
             fixed = actions.normalize(replacement, legal_list) if replacement else None
             if fixed is None and legal_list:
                 fixed = next((item for item in legal_list if not _COMMIT.match(item)), None)
+            if fixed is None:
+                # Seen in the lab: the audit rejected an acceptance (38 for us, 62 for them) but offered no
+                # usable alternative, and the acceptance left anyway. A rejected acceptance must never be
+                # played: repeat our own last demand, which the arena already accepted as a legal move.
+                fixed = next((str(item) for item in reversed(list(avoid)) if _OFFER_MOVE.match(str(item))), None)
+            if fixed is None:
+                # No earlier offer of ours either: take an offer-shaped example from the spec.
+                fixed = next((str(item) for item in (spec.action_examples or [])
+                              if _OFFER_MOVE.match(str(item)) and "<" not in str(item)), None)
             if fixed:
                 log(f"audit rejected {action!r}; playing {fixed!r}")
                 action, source, candidate_chat = fixed, "audit", ""  # the old line celebrated a deal we refused
