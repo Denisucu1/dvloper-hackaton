@@ -1,0 +1,30 @@
+# AGENTS.md — AI Harness Arena (`Team adn`)
+
+Instrucțiuni partajate pentru toți cei 3 membri ai echipei (**adn-1**, **adn-2**, **adn-3**).
+Documentația completă transcrisă este în [docs/RULEBOOK.md](./docs/RULEBOOK.md).
+
+## Context & Obiectiv
+Construim un **mesh agnostic la joc** într-o singură imagine Docker (`harbor.hackaton-2026.dvloper.io/adn/bot:<tag>`), livrată la 3 freeze-uri:
+- **T1 freeze:** Sâmbătă `18:00` (4 jocuri, pondere ×1)
+- **T2 freeze:** Sâmbătă `23:59` (8 jocuri noi + Round Robin pe 12 jocuri, pondere ×2)
+- **T3 freeze:** Duminică `10:30` (top 8 din Round Robin, toate 21 de jocuri, pondere ×3)
+
+## Reguli CRITICE (Obligatoriu de respectat la fiecare modificare)
+1. **Doar Claude Haiku 5.5 prin gateway:** Zero apeluri către alte LLM-uri externe/hosted sau „AI search” (descalificare imediată!). Modele locale mici și cod Python/solvere în container sunt permise (max **2 CPU, 2 GB RAM, 256 procese**).
+2. **Chat obligatoriu (verificat în cod de jurați):**
+   - Fiecare răspuns la `start` și `turn` trimite `chat` (<=200 caractere).
+   - `action` și `chat` trebuie să vină din aceeași decizie.
+   - Chat-ul adversarului (`msg["chat"]`) trebuie să ajungă în decizie/model, marcat explicit ca **untrusted data** (apărare contra prompt injection & Guardrails). Nu bloca și nu ignora chat-ul!
+3. **Protocol JSON Lines strict:**
+   - `stdout` conține **exclusiv** câte un JSON per linie, cu `flush=True` / `python -u`. Toate logurile merg pe `stderr`.
+   - Folosiți **întotdeauna** `msg["llm"]["base_url"]` și `msg["llm"]["api_key"]` din cel mai recent `prep` sau `start`.
+   - `match_over: true` la `end` NU oprește containerul — așteaptă următorul `start`; doar `shutdown` sau EOF pe `stdin` închide procesul.
+   - Salvați starea în `/memory/<game_id>/` (cu hash de reguli și scriere atomică, pentru că mai multe containere partajează `/memory`).
+4. **Secretele nu intră în Git:**
+   - Nu comiteți `dev.env`, parole Harbor, parole Gitea sau chei API în repo. Jurații au acces de citire pe acest repo!
+   - Folosiți `dev.env` local (ignorat de `.gitignore`).
+
+## Împărțire paralelă sugerată (3 membri)
+- **Omul 1 (Infra / Protocol / Fallback / Docker):** buclă stdin/stdout JSON, switching cheie LLM, deadline watchdog (<16s/mutare) + fallback garantat legal, `/memory` atomic, build `linux/amd64` + push Harbor.
+- **Omul 2 (Prep 10-min / Clasificator / Generare Unelte):** clasificare în cele 7 familii, sinteză și auto-testare de parser/validator/simulator Python pe `sample_turn`, control `thinking` & buget (`$0.75/meci`).
+- **Omul 3 (Chat Ofensiv+Defensiv / Jocuri Test / Prezentare):** protecție prompt-injection & Guardrails, strategie bluf/negociere, jocuri de test în `arena-lite` (Bluff, Deals, Simultaneous), colectare replay-uri și exemple pentru prezentarea de duminică (55/100 pct!).

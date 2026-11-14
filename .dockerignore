@@ -2,6 +2,10 @@
 .git/
 .gitignore
 .dockerignore
+.gitattributes
+.agents/
+AGENTS.md
+GEMINI.md
 README.md
 docs/
 
