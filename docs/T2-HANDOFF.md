@@ -103,6 +103,27 @@ The pipeline runs it as the `performance` stage (`--verbose` prints every iterat
 per-strategy scores). Search/UCT and the solvers are seeded and iteration-capped inside self-play, so the
 index is reproducible; a changed index means changed code, not CPU timing.
 
+
+## Luck-based games — state after the T2 lab
+
+The chain is now closed end-to-end:
+
+1. **Generation**: simgen asks for `chance_actions`/`apply_chance` when the game rolls, deals or draws;
+   `apply()` only enters a pending-chance state and never samples. `ARTIFACT_VERSION=7`.
+2. **Validation**: the sandbox rejects half contracts, distributions that do not sum to 1, and
+   `apply_chance` that raises; deterministic models are unchanged.
+3. **Play**: `solver_chance.py` runs expectimax over chance nodes (147/147 DP-optimal Pig decisions,
+   0.7 ms/call); `solver_luck.py` is a text-only fallback for unseen dice games (exact EV, one-die
+   boundary 19→roll / 20→hold, 0.06 ms/call, 31 tests).
+4. **Selection**: the prep tournament includes the chance strategy; on the chance fixture it wins and
+   adds +0.35 to the performance index (0.892, deterministic).
+5. **Coverage**: probes include `chance` and `luck`; game smoke includes `tg_dice_probe`.
+
+Leduc (mini_poker in the round robin): `tg_leduc_probe` + `LeducSolver` parse private card, community
+card, pot and the betting line, and use pot odds/hand strength. It runs before the generic BluffSolver;
+872 fuzzed decisions, 0 declines, 0.1 ms. A real match shows `solver leduc: check/bet`. The parser is
+conservative: Kuhn and one-card text are declined, so it cannot misplay the wrong shape.
+
 ## Known limits / next
 
 - Tournament self-play needs the generated `Model` to be usable from `__init__` (no observation text).

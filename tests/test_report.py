@@ -63,6 +63,7 @@ class RegistryTests(unittest.TestCase):
         for required in (
             "actions.normalize", "chat.gate", "memory.atomic", "search.routing",
             "solvers.family", "solvers.matrix", "solvers.chance", "solvers.cfr",
+            "solvers.luck", "solvers.leduc",
             "engine.routing", "selfplay.paired", "tournament.roundrobin",
             "bench.replay", "prep.policy", "protocol.smoke",
         ):
