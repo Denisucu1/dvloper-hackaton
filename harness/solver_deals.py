@@ -253,12 +253,15 @@ class DealsSolver:
     def _is_explicit_auction(self, obs_l: str, rules_l: str) -> bool:
         if "auction" not in obs_l and "auction" not in rules_l:
             return False
+        combined = f"{obs_l}\n{rules_l}"
         return (
-            "second-price" in rules_l
-            or "second highest" in rules_l
-            or "second-highest" in rules_l
-            or "vickrey" in rules_l
-            or "first-price" in rules_l
+            "second-price" in combined
+            or "second highest" in combined
+            or "second-highest" in combined
+            or "vickrey" in combined
+            or "first-price" in combined
+            or "sealed-bid" in combined
+            or "pays its bid" in combined
         )
 
     def _propose_auction(
@@ -271,12 +274,16 @@ class DealsSolver:
         if len(vals) != 1:
             return None
         val = int(vals)[0] if isinstance(vals, int) else int(vals[0])
-        rules_l = (rules or "").lower()
-        if "second-price" in rules_l or "second highest" in rules_l or "second-highest" in rules_l or "vickrey" in rules_l:
+        combined_l = f"{(rules or '').lower()}\n{observation.lower()}"
+        if "second-price" in combined_l or "second highest" in combined_l or "second-highest" in combined_l or "vickrey" in combined_l:
             bid = val
         else:
-            range_m = re.search(r"(\d+)\s+to\s+(\d+)", rules or "", re.I)
-            low_v = int(range_m.group(1)) if range_m else 0
+            range_m = re.search(
+                r"(?:(\d+)\s+to\s+(\d+)|values\s+(\d+)\s*-\s*(\d+))",
+                f"{rules or ''}\n{observation}",
+                re.I,
+            )
+            low_v = int(range_m.group(1) or range_m.group(3)) if range_m else 0
             bid = max(low_v, int(round(low_v + 0.55 * (val - low_v))))
 
         raw = f"bid {bid}"

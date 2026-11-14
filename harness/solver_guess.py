@@ -37,19 +37,35 @@ _GAME_OVER = re.compile(r"\bgame\s+(?:is\s+)?over\b", re.IGNORECASE)
 _OPPONENT_TURN = re.compile(r"\bit\s+is\s+the\s+opponent['\u2019]s\s+turn\b", re.IGNORECASE)
 
 _WORDLE_HEADER_RE = re.compile(
-    r"WORDLE\s+DUEL\s*\(\s*(\d+)\s+letters(?:\s*,\s*(\d+)\s+guesses)?",
+    r"WORD(?:LE)?\s+DUEL\s*\(\s*(\d+)\s+letters(?:\s*,\s*(\d+)\s+guesses)?",
     re.IGNORECASE,
 )
 _WORDLE_EXACT_LEN_RE = re.compile(
     r"exactly\s+(\d+)\s+letters\s+a-z",
     re.IGNORECASE,
 )
+_WORDLE_ALT_LEN_RE = re.compile(
+    r"guess\s+a\s+(?:(four|4)|(five|5)|(six|6))-letter\s+word",
+    re.IGNORECASE,
+)
+_WORDLE_GUESSES_EACH_RE = re.compile(
+    r"(\d+)\s+guesses\s+each",
+    re.IGNORECASE,
+)
 _WORDLE_ROUND_RE = re.compile(
     r"Round\s+(\d+)\s+of\s+(\d+)",
     re.IGNORECASE,
 )
+_WORDLE_PLAYER_RE = re.compile(
+    r"You\s+are\s+Player\s+(\d+)",
+    re.IGNORECASE,
+)
 _WORDLE_GUESS_LINE_RE = re.compile(
     r"^\s*([a-z]{3,10})\s*->\s*((?:[GYX]\s*){3,10})\s*$",
+    re.IGNORECASE,
+)
+_PUBLIC_GUESS_LINE_RE = re.compile(
+    r"^\s*Player\s+(\d+)\s+guessed\s+([a-z]{3,10})\s*->\s*([GYX.\s]{3,20})\s*$",
     re.IGNORECASE,
 )
 _OPP_PAT_LINE_RE = re.compile(
@@ -158,14 +174,35 @@ def parse_wordle_state(observation: str, rules: str = "") -> dict | None:
         m_ex = _WORDLE_EXACT_LEN_RE.search(combined)
         if m_ex:
             word_len = int(m_ex.group(1))
+        else:
+            m_alt = _WORDLE_ALT_LEN_RE.search(combined)
+            if m_alt:
+                word_len = 4 if m_alt.group(1) else (6 if m_alt.group(3) else 5)
+            elif re.search(r"WORD(?:LE)?\s+DUEL", combined, re.IGNORECASE):
+                word_len = 5
     if word_len is None or word_len < 3 or word_len > 10:
         return None
+
+    m_ge = _WORDLE_GUESSES_EACH_RE.search(combined)
+    if m_ge:
+        max_rounds = int(m_ge.group(1))
 
     cur_round = 1
     m_rnd = _WORDLE_ROUND_RE.search(observation or "")
     if m_rnd:
         cur_round = int(m_rnd.group(1))
         max_rounds = int(m_rnd.group(2))
+
+    m_pl = _WORDLE_PLAYER_RE.search(observation or "")
+    my_player = int(m_pl.group(1)) if m_pl else 0
+
+    bare_word = bool(
+        re.search(
+            r"guess\s+a\s+(?:four|five|six|\d+)-letter\s+word|exactly\s+one\s+(?:four|five|six|\d+)-letter\s+word",
+            combined,
+            re.IGNORECASE,
+        )
+    ) and not bool(re.search(r'"guess\s+<', combined, re.IGNORECASE))
 
     my_guesses: list[tuple[str, tuple[str, ...]]] = []
     opp_patterns: list[tuple[str, ...]] = []
@@ -178,6 +215,19 @@ def parse_wordle_state(observation: str, rules: str = "") -> dict | None:
             continue
         if low.startswith("opponent's guesses") or low.startswith("opponent guesses"):
             section = "opp"
+            continue
+        if low.startswith("previous guesses"):
+            section = "pub"
+            continue
+        m_pub = _PUBLIC_GUESS_LINE_RE.match(line)
+        if m_pub:
+            p_idx = int(m_pub.group(1))
+            w = m_pub.group(2).lower()
+            pat = tuple(("X" if ch == "." else ch.upper()) for ch in m_pub.group(3) if not ch.isspace())
+            if len(w) == word_len and len(pat) == word_len:
+                my_guesses.append((w, pat))
+                if p_idx != my_player:
+                    opp_patterns.append(pat)
             continue
         if section == "me":
             m_g = _WORDLE_GUESS_LINE_RE.match(line)
@@ -193,6 +243,9 @@ def parse_wordle_state(observation: str, rules: str = "") -> dict | None:
                 if len(pat) == word_len:
                     opp_patterns.append(pat)
 
+    if not m_rnd and my_guesses:
+        cur_round = len(my_guesses) + 1
+
     opp_best_greens = max((sum(1 for c in p if c == "G") for p in opp_patterns), default=0)
     return {
         "length": word_len,
@@ -201,6 +254,7 @@ def parse_wordle_state(observation: str, rules: str = "") -> dict | None:
         "guesses": my_guesses,
         "opp_patterns": opp_patterns,
         "opp_best_greens": opp_best_greens,
+        "bare_word": bare_word,
     }
 
 
@@ -352,14 +406,16 @@ def _propose_wordle_from_state(state: dict, avoid_words: set[str]) -> str:
     cur_round: int = state["round"]
     max_rounds: int = state["max_rounds"]
     opp_best_greens: int = state["opp_best_greens"]
+    bare_word: bool = bool(state.get("bare_word", False))
+    prefix = "" if bare_word else "guess "
 
     if not guesses:
         for opener in _DEFAULT_OPENERS.get(word_len, ()):
             if len(opener) == word_len and opener not in avoid_words:
-                return f"guess {opener}"
+                return f"{prefix}{opener}"
         cands = wordle_candidates(word_len, [], avoid_words)
         if cands:
-            return f"guess {cands[0]}"
+            return f"{prefix}{cands[0]}"
 
     cands = wordle_candidates(word_len, guesses, avoid_words)
     if cands:
@@ -375,10 +431,10 @@ def _propose_wordle_from_state(state: dict, avoid_words: set[str]) -> str:
             tested_letters=tested_letters,
             prefer_solution=urgent,
         )
-        return f"guess {chosen}"
+        return f"{prefix}{chosen}"
 
     fallback_word = _synthesize_fallback_word(word_len, guesses, avoid_words)
-    return f"guess {fallback_word}"
+    return f"{prefix}{fallback_word}"
 
 
 def verify_or_repair_wordle(
@@ -394,6 +450,8 @@ def verify_or_repair_wordle(
 
     word_len = state["length"]
     guesses = state["guesses"]
+    bare_word = bool(state.get("bare_word", False))
+    prefix = "" if bare_word else "guess "
     avoid_words: set[str] = set()
     for a in avoid or ():
         s = str(a).strip().lower()
@@ -414,7 +472,7 @@ def verify_or_repair_wordle(
             and cand not in used_words
             and is_consistent_with_history(cand, guesses)
         ):
-            return f"guess {cand}"
+            return f"{prefix}{cand}"
 
     return _propose_wordle_from_state(state, avoid_words)
 

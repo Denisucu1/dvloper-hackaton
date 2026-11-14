@@ -57,6 +57,8 @@ def handle_start(msg: dict, session: Session) -> dict:
         if start_rules:
             # Prep covered every variant; the rules of the drawn variant are the authoritative ones.
             session.rules = start_rules
+            if session.engine is not None:
+                session.engine.rules = start_rules
     elif session.spec.game_id != game_id:
         session.cold_start(msg)
         if study >= 45 and session.gateway.affordable:
@@ -64,8 +66,14 @@ def handle_start(msg: dict, session: Session) -> dict:
             if spec is not None:
                 session.spec = spec
                 session._rebuild()
+                if start_rules and session.engine is not None:
+                    session.engine.rules = start_rules
     elif session.spec.game_id == game_id:
+        if start_rules:
+            session.rules = start_rules
         session._rebuild()
+        if start_rules and session.engine is not None:
+            session.engine.rules = start_rules
 
     log(kv(start=msg.get("match_id"), game=game_id, variant=(msg.get("variant") or {}).get("label"),
            seat=msg.get("seat"), opponent=msg.get("opponent"), family=session.spec.family,

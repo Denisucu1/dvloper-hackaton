@@ -893,7 +893,7 @@ def decide_turn(
 
     # Defense starts in code: the speech rule is read from the rules, the opponent's words are read,
     # tagged and handed to the engine.
-    if rules and not engine.rules:
+    if rules:
         engine.rules = rules
     chat_policy.learn(rules, observation)
     # The subject may be named only in the first observation, not in `start.rules`: look its other names

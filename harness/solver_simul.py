@@ -31,22 +31,30 @@ _NUMERIC_LIKE = re.compile(
 # Colonel Blotto / Battlefield allocation patterns
 _FIELD_VAL = re.compile(r"\bF(\d+)\s*=\s*(\d+)", re.IGNORECASE)
 _PLAIN_BFIELD_VALS = re.compile(r"Battlefield\s+values\s+this\s+round\s*:\s*([0-9\s]+)", re.IGNORECASE)
+_HEADER_FIELDS = re.compile(
+    r"(?:-\s*(\d+)\s+(?:battlefields|fields)|(?:on|across)\s+(\d+)\s+(?:battlefields|fields))",
+    re.IGNORECASE,
+)
 _EXACT_BUDGET = re.compile(
-    r"place\s+exactly\s+(\d+)\s+(?:soldiers|troops|units|points)\s+on\s+(\d+)\s+(?:battlefields|fields)",
+    r"(?:place\s+exactly|allocate(?:\s+at\s+most)?)\s+(\d+)\s+(?:soldiers|troops|units|points)\s+(?:on|across)\s+(\d+)\s+(?:battlefields|fields)",
     re.IGNORECASE,
 )
 _RESERVE_BUDGET = re.compile(
-    r"your\s+reserve\s*:\s*(\d+)\s*(?:soldiers|troops|units)?.*?(?:opponent(?:'s)?\s+reserve\s*:\s*(\d+))?",
+    r"(?:your\s+reserve\s*:\s*(\d+)\s*(?:soldiers|troops|units)?.*?(?:opponent(?:'s)?\s+reserve\s*:\s*(\d+))?|Reserve\s*:\s*you\s+(\d+)\s*,\s*opponent\s+(\d+))",
     re.IGNORECASE | re.DOTALL,
 )
 _ROUND_OF = re.compile(r"\bRound\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE)
 _ROUNDS_WON = re.compile(
-    r"(?:Rounds\s+won\s*:\s*you\s+(\d+)\s*,\s*opponent\s+(\d+)|Score\s*:\s*You\s+(\d+)\s*-\s*(\d+)\s*Opponent)",
+    r"(?:(?:Rounds\s+won|Field\s+(?:wins|points))\s*:\s*you\s+(\d+)\s*,\s*opponent\s+(\d+)|Score\s*:\s*You\s+(\d+)\s*-\s*(\d+)\s*Opponent)",
     re.IGNORECASE,
 )
 _HIST_FIELD = re.compile(r"F(\d+)\s*\(worth\s+(\d+)\)\s*:\s*you\s+(\d+)\s+vs\s+(\d+)", re.IGNORECASE)
 _ALT_HIST_ROUND = re.compile(
     r"Round\s+\d+\s*(?:\(values\s+([0-9\s]+)\))?\s*:\s*You\s*:\s*([0-9\s]+)\|\s*Opponent\s*:\s*([0-9\s]+)",
+    re.IGNORECASE,
+)
+_SLASH_HIST_ROUND = re.compile(
+    r"Round\s+\d+\s*:\s*you\s+([0-9\s]+?)\s*/\s*opponent\s+([0-9\s]+?)(?:\s*->|$)",
     re.IGNORECASE,
 )
 _MOVE_K_NUMS = re.compile(r"(\d+)\s+numbers\s+separated\s+by\s+spaces", re.IGNORECASE)
@@ -151,6 +159,13 @@ def _parse_blotto_history(text: str, k: int) -> list[tuple[list[int], list[int],
                 if len(vals) != k:
                     vals = [1] * k
                 history.append((vals, mine, theirs))
+            continue
+        m_slash = _SLASH_HIST_ROUND.search(line)
+        if m_slash:
+            mine = [int(x) for x in m_slash.group(1).split() if x.isdigit()]
+            theirs = [int(x) for x in m_slash.group(2).split() if x.isdigit()]
+            if len(mine) == k and len(theirs) == k:
+                history.append(([1] * k, mine, theirs))
     return history
 
 
@@ -161,9 +176,14 @@ def _propose_blotto(observation: str, rules_text: str, seat: int, turn: int) -> 
         values = [int(val) for _, val in field_matches]
     else:
         m_plain = _PLAIN_BFIELD_VALS.search(observation)
-        if not m_plain:
-            return None
-        values = [int(x) for x in m_plain.group(1).split() if x.isdigit()]
+        if m_plain:
+            values = [int(x) for x in m_plain.group(1).split() if x.isdigit()]
+        else:
+            m_hdr = _HEADER_FIELDS.search(observation) or _HEADER_FIELDS.search(rules_text)
+            if not m_hdr:
+                return None
+            k_hdr = int(m_hdr.group(1) or m_hdr.group(2))
+            values = [1] * k_hdr
     k = len(values)
     if k < 2:
         return None
@@ -185,8 +205,9 @@ def _propose_blotto(observation: str, rules_text: str, seat: int, turn: int) -> 
     # Check whether this is a carry-over Reserve variant or a fixed-budget variant
     m_res = _RESERVE_BUDGET.search(observation)
     if m_res:
-        my_res = int(m_res.group(1))
-        opp_res = int(m_res.group(2)) if m_res.group(2) else my_res
+        my_res = int(m_res.group(1) or m_res.group(3))
+        opp_g = m_res.group(2) or m_res.group(4)
+        opp_res = int(opp_g) if opp_g else my_res
         alloc = _solve_blotto_reserves(
             k=k,
             values=values,
@@ -274,18 +295,24 @@ def _solve_blotto_reserves(
         last_opp = history[-1][2]
         # Rank fields by where opponent puts the FEWEST soldiers (easiest to win cheap!)
         field_order = sorted(range(k), key=lambda i: (last_opp[i] * 0.6 + opp_totals[i] * 0.4, -values[i]))
-        weakest_field = field_order[0]
-        # Pick the weakest field + one of the other fields (rotating so we are unpredictable)
-        others = [i for i in range(k) if i != weakest_field]
-        second_field = others[(round_no + seat) % len(others)]
-        chosen = [second_field, weakest_field]
+        if target_count == 2:
+            weakest_field = field_order[0]
+            # Pick the weakest field + one of the other fields (rotating so we are unpredictable)
+            others = [i for i in range(k) if i != weakest_field]
+            second_field = others[(round_no + seat) % len(others)]
+            chosen = [second_field, weakest_field]
+        else:
+            weakest = field_order[: target_count - 1]
+            others = field_order[target_count - 1 :]
+            rot = others[(round_no + seat) % len(others)] if others else field_order[-1]
+            chosen = [rot] + weakest
     else:
         # Round 1: avoid leaving F3=0 like every textbook bot; target F2 and F3 (or F1 and F3)
         start_idx = (round_no + seat + 1) % k
-        chosen = [start_idx, (start_idx + 1) % k]
+        chosen = [(start_idx + j) % k for j in range(target_count)]
 
     alloc = [0] * k
-    if target_count == 2 or len(chosen) == 2:
+    if target_count == 2:
         f_heavy, f_light = chosen[0], chosen[1]
         # Asymmetric split (e.g. 60% / 40% when opponent plays 2 fields, or 52% / 48% when going all-in)
         if history and min(history[-1][2]) == 0 and spend < my_res:
