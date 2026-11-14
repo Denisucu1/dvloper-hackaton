@@ -441,26 +441,54 @@ class Mcts:
             return DRAW
 
 
+def route_for(model: Any, seat: int) -> str:
+    """Which searcher will run, and why. Exposed so logs and tests can prove the routing."""
+    if model is None:
+        return "none"
+    movers = _safe_movers(model)
+    if int(seat) not in movers:
+        return "not-my-turn"
+    actions = _safe_actions(model, int(seat))
+    if not actions:
+        return "no-actions"
+    if len(movers) > 1:
+        return "mcts-joint"
+    if len(actions) > WIDE_ACTIONS:
+        return "mcts"
+    return "alphabeta"
+
+
+def best_action_meta(model: Any, seat: int, seconds: float = 0.8, max_depth: int = 8) -> dict:
+    """`best_action` plus the routing decision and why it produced no move (or which search ran)."""
+    meta = {"action": None, "value": DRAW, "route": "none", "depth": 0}
+    if model is None:
+        return meta
+    try:
+        seat = int(seat)
+        route = route_for(model, seat)
+        meta["route"] = route
+        if route in ("not-my-turn", "no-actions"):
+            return meta
+        if route in ("mcts", "mcts-joint"):
+            action, value = Mcts(model, seat, seconds=min(3.0, max(0.2, float(seconds)))).best()
+            meta.update(action=action, value=value)
+            return meta
+        searcher = Searcher(model, seat, seconds, max_depth)
+        action, value = searcher.best()
+        meta.update(action=action, value=value, depth=searcher.depth_reached)
+        return meta
+    except Exception:  # noqa: BLE001
+        meta["route"] = "error"
+        return meta
+
+
 def best_action(model: Any, seat: int, seconds: float = 0.8, max_depth: int = 8) -> tuple[str | None, float]:
     """Best move for `seat`, or (None, 0.5) if the model is unusable. Never raises.
 
     Routing: wide or simultaneous -> MCTS/UCT; narrow alternating games -> alpha-beta (exact, cheap).
     """
-    if model is None:
-        return None, DRAW
-    try:
-        seat = int(seat)
-        movers = _safe_movers(model)
-        if seat not in movers:
-            return None, DRAW
-        actions = _safe_actions(model, seat)
-        if not actions:
-            return None, DRAW
-        if len(movers) > 1 or len(actions) > WIDE_ACTIONS:
-            return Mcts(model, seat, seconds=min(3.0, max(0.2, float(seconds)))).best()
-        return Searcher(model, seat, seconds, max_depth).best()
-    except Exception:  # noqa: BLE001
-        return None, DRAW
+    meta = best_action_meta(model, seat, seconds, max_depth)
+    return meta.get("action"), float(meta.get("value", DRAW))
 
 
 def rollout_value(model: Any, seat: int, plies: int = 40, rng: Any = None) -> float:

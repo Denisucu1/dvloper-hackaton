@@ -14,6 +14,7 @@ The opponent's chat claims are passed in here too, so their words genuinely reac
 from __future__ import annotations
 
 import os
+import re
 from typing import Iterable
 
 from . import memory, sandbox
@@ -21,6 +22,24 @@ from .actions import normalize
 from .game_model import ARTIFACT_VERSION
 from .log import log
 from .spec import Spec
+
+
+_SEAT_IN_TEXT = re.compile(r"(?i)\byou are (?:seat|player)\s+(\d+)\b")
+
+
+def seat_from_observation(observation: str, fallback: int) -> int:
+    """The arena sends `seat` only in `start`; turn messages carry it inside the observation text.
+
+    Reading it back here keeps every code path (solver, generated model, generated policy) on the right
+    side even if the caller lost the seat. Falls back silently when the text does not say it.
+    """
+    match = _SEAT_IN_TEXT.search(observation or "")
+    if not match:
+        return int(fallback)
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return int(fallback)
 
 
 def _solvers() -> list:
@@ -42,6 +61,7 @@ class Engine:
         self.generated_failures = 0
         self.model_failures = 0
         self.solver_failures = 0
+        self._seat_logged = False
         self.genpolicy_path = genpolicy_path
         self.model_path: str | None = None
         self.rules = ""
@@ -86,21 +106,32 @@ class Engine:
         """Returns (action or None, a short intent the chat line must be consistent with)."""
         legal_list = [str(item) for item in legal] if legal else None
 
+        announced = seat_from_observation(observation, seat)
+        if announced != seat:
+            if not self._seat_logged:
+                log(f"seat from observation: {announced} (caller said {seat})")
+                self._seat_logged = True
+            seat = announced
+
         action = self._ask_solver(observation, legal_list, seat, turn, timeout)
         if action:
             return action, self._intent(action, claims, source=f"{self._solver_name} solver")
 
         if self.model_path and self.model_failures < 3:
             budget = min(3.0, max(1.0, timeout * 0.7))
-            action = sandbox.call_model_best(
+            meta = sandbox.call_model_search(
                 self.model_path, _search_path(), self.rules, observation, legal_list, seat,
                 timeout=budget, depth=8,
             )
+            action = meta.get("action")
             if action:
-                log(f"genmodel search: {action}")
+                log(f"genmodel search: {action} route={meta.get('route')} "
+                    f"value={float(meta.get('value') or 0.5):.2f} depth={meta.get('depth')}")
+                self.model_failures = 0  # a success re-arms the model after a bad turn
                 return action, self._intent(action, claims, source="generated model search")
             self.model_failures += 1
-            log(f"generated model fallback #{self.model_failures}")
+            log(f"generated model fallback #{self.model_failures}: route={meta.get('route')} "
+                f"reason={meta.get('reason')}")
 
         if self.genpolicy_path and self.generated_failures < 3:
             action = sandbox.call_choose(
