@@ -53,6 +53,7 @@ def _solvers() -> list:
         ("solver_pig", "PigSolver"),
         ("solver_simul", "SimultaneousSolver"),
         ("solver_bluff", "BluffSolver"),
+        ("solver_deals", "DealsSolver"),
     ):
         try:
             module = __import__(f"harness.{module_name}", fromlist=[class_name])

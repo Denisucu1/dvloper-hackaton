@@ -21,7 +21,7 @@ FAMILIES = (
 
 _FAMILY_HINTS = {
     "bluff": ("bluff", "bet", "raise", "fold", "wager", "pot", "chips", "hidden card", "odds", "poker", "leduc", "kuhn", "liar"),
-    "deals": ("offer", "accept", "reject", "negotiat", "auction", "bid", "price", "split", "deal"),
+    "deals": ("offer", "accept", "reject", "negotiat", "auction", "bid", "price", "split", "deal", "walk-away", "surplus", "shrinking", "ultimatum", "bargain", "cooperate", "defect"),
     "read_opponent": ("simultaneous", "at the same time", "both players choose", "mixed strateg", "blotto", "battlefield"),
     "guessing": ("guess", "higher", "lower", "feedback", "secret number", "wordle", "secret word"),
     "think_ahead": ("board", "row", "column", "diagonal", "capture", "piece", "move", "legal", "connect four"),

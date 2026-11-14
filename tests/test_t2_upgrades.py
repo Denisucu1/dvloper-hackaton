@@ -297,5 +297,73 @@ Answer "drop <column>"."""
             self.assertIsNone(turnpolicy.thinking_for(s, has_code_move=True, legal=None))
 
 
+    def test_deals_solver_split_the_pot_and_trust_and_nim(self):
+        from harness.solver_deals import DealsSolver
+        from harness.solver_grid import ConnectKSolver
+        from harness.actions import enforce_format
+
+        deals = DealsSolver()
+        spec = Spec(game_id="tg_deals", family="deals", hidden_information=True)
+        rules = (
+            "SPLIT THE POT\nYou and your opponent are splitting a pot of 100 coins, shrinking by 5 a turn.\n"
+            "Each player has a private walk-away value (10 to 45)."
+        )
+        deals.configure(spec, rules)
+        obs = (
+            "SPLIT THE POT. You are Player 0.\nYour private walk-away value: 23\n"
+            "Turn 1 of 8. Current pot: 100 coins.\nOffers so far: none.\n"
+            'It is YOUR turn: "offer <n>" with n from 0 to 100, or "walk".'
+        )
+        # Turn 1 pot=100 -> next_pot=95 -> int(0.45*95)=42 -> k_45=53 (immediately accepted by trickster_bot!)
+        act = deals.propose(observation=obs, legal=None, seat=0, turn=1)
+        self.assertEqual(act, "offer 53")
+
+        # Final turn 8 of 8 with unfavorable opponent offer -> walk
+        obs_t8 = (
+            "SPLIT THE POT. You are Player 1.\nYour private walk-away value: 30\n"
+            "Turn 8 of 8. Current pot: 65 coins.\nOffers so far:\n  1. opponent offered to keep 55\n"
+            'It is YOUR turn: "offer <n>" with n from 0 to 65, or "accept", or "walk".'
+        )
+        self.assertEqual(deals.propose(observation=obs_t8, legal=None, seat=1, turn=8), "walk")
+
+        # Iterated Prisoner's Dilemma: cooperate in Round 1, defect in final round 5 of 5
+        pd_spec = Spec(game_id="prisoners_dilemma", family="deals")
+        deals.configure(pd_spec, "Iterated Prisoner's Dilemma.")
+        self.assertEqual(
+            deals.propose(
+                observation="Round 1 of 5. Choose cooperate or defect.",
+                legal=["cooperate", "defect"],
+                seat=0,
+                turn=1,
+            ),
+            "cooperate",
+        )
+        self.assertEqual(
+            deals.propose(
+                observation="Round 5 of 5. Choose cooperate or defect.",
+                legal=["cooperate", "defect"],
+                seat=0,
+                turn=5,
+            ),
+            "defect",
+        )
+
+        # Nim / Take-away: 15 stones, take 1 to 3 -> 15 % 4 = 3 -> take 3
+        grid = ConnectKSolver()
+        self.assertEqual(
+            grid.propose(
+                observation="NIM. Stones remaining: 15. You may take 1 to 3 stones.",
+                legal=["take 1", "take 2", "take 3"],
+            ),
+            "take 3",
+        )
+
+        # Truth / Guardrails format guard prefixes "answer "
+        self.assertEqual(
+            enforce_format("unknown", observation='It is YOUR turn: "answer <text>".'),
+            "answer unknown",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
