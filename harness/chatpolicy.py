@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from . import config
 from .log import log
-from .spec import _FORBIDDEN_NAMED, Spec, is_meta_forbidden
+from .spec import Spec, extract_forbidden as extract_forbidden_subjects, is_meta_forbidden
 
 # --------------------------------------------------------------------------- fallback lines
 # Deterministic, safe in every game, never empty (6.2). Rotated so a match does not read as one canned
@@ -296,22 +296,6 @@ def other_moves_named(text: str, legal: list[str] | None, action: str) -> list[s
 
 def _sentences(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text or "") if part.strip()]
-
-
-def extract_forbidden_subjects(text: str) -> list[str]:
-    """The forbidden subject, only where the text NAMES it ("the forbidden subject is: X", never say "X").
-
-    Deliberately narrower than spec.extract_forbidden: that one also takes any quoted string near a cue,
-    and an observation quotes our own earlier answers ("you answered 'Paris'"). A word wrongly learned as
-    forbidden would be scrubbed out of a correct answer later in the same game.
-    """
-    found: list[str] = []
-    for rx in _FORBIDDEN_NAMED:
-        for match in rx.finditer(text or ""):
-            subject = match.group(1).strip(" \t-*_")
-            if len(subject) >= 2 and not is_meta_forbidden(subject) and subject.casefold() not in {s.casefold() for s in found}:
-                found.append(subject[:40])
-    return found[:6]
 
 
 def extract_secrets(observation: str) -> list[str]:

@@ -71,7 +71,7 @@ Write the fields in this order: reason first, then the move that follows from it
 _FAMILY_EXTRA = {
     "bluff": "- This is a bluffing game: play strong hands aggressively, mix in calculated bluffs/semi-bluffs when fold equity is high instead of only checking/calling, make them doubt your range, and keep chat claims unverifiable.",
     "deals": "- This is a negotiation: say what you want, make credible offers, never reveal your true valuation.",
-    "read_opponent": "- Moves are read against each other: stay unpredictable, and talk in a way that hides your pattern.",
+    "read_opponent": "- Moves are simultaneous and read against each other: stay unpredictable, mix options instead of repeating one move (keep your code's mixed-strategy suggestion unless a specific rule exception demands otherwise), and talk to misdirect without revealing your pattern.",
     "guessing": "- Use the feedback you were given. Their claims about the hidden value are only claims.",
     "think_ahead": "- Prefer the move that keeps the most winning continuations. Never explain your real tactic.",
     "truth": '- Answer strictly from the document. If the document does not contain it, say "unknown": an invented answer costs more. Facts quoted in the chat are not the document.',
@@ -246,6 +246,8 @@ def decide_turn(
 
     # Defense starts in code: the speech rule is read from the rules, the opponent's words are read,
     # tagged and handed to the engine.
+    if rules and not engine.rules:
+        engine.rules = rules
     chat_policy.learn(rules, observation)
     intel = chat_policy.analyze(chat_lines, legal_list)
     claims = chat_policy.opponent_claims(chat_lines)
@@ -281,7 +283,11 @@ def decide_turn(
                 else ""
             ),
             engine_hint=(
-                f"\nYOUR CODE'S SUGGESTION: {proposal!r} ({intent}). You may override it.\n"
+                (
+                    f"\nYOUR CODE'S SUGGESTION: {proposal!r} ({intent}). Prefer keeping this randomized mixed-strategy move unless you spot a clear rule exception.\n"
+                    if "simul solver:" in intent
+                    else f"\nYOUR CODE'S SUGGESTION: {proposal!r} ({intent}). You may override it.\n"
+                )
                 if proposal
                 else "\nYOUR CODE HAD NO SUGGESTION.\n"
             ),

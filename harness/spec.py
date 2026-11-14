@@ -23,7 +23,7 @@ _FAMILY_HINTS = {
     "bluff": ("bluff", "bet", "raise", "fold", "wager", "pot", "chips", "hidden card", "odds"),
     "deals": ("offer", "accept", "reject", "negotiat", "auction", "bid", "price", "split", "deal"),
     "read_opponent": ("simultaneous", "at the same time", "both players choose", "mixed strateg"),
-    "guessing": ("guess", "higher", "lower", "feedback", "round", "number"),
+    "guessing": ("guess", "higher", "lower", "feedback", "secret number"),
     "think_ahead": ("board", "row", "column", "diagonal", "capture", "piece", "move", "legal"),
     "truth": ("document", "passage", "question", "unknown", "dossier", "quote", "source"),
     "guardrails": ("forbidden", "never mention", "must not say", "do not mention", "banned"),
@@ -133,7 +133,8 @@ def guess_family(text: str) -> str:
     scores = {family: 0 for family in _FAMILY_HINTS}
     for family, words in _FAMILY_HINTS.items():
         for word in words:
-            scores[family] += lowered.count(word)
+            weight = 3 if family == "read_opponent" and (" " in word or word == "simultaneous") else 1
+            scores[family] += lowered.count(word) * weight
     best = max(scores, key=lambda name: scores[name])
     return best if scores[best] > 0 else "unknown"
 
@@ -159,10 +160,10 @@ def extract_action_examples(rules: str) -> list[str]:
 
 
 _FORBIDDEN_NAMED = [
-    # "The forbidden subject of this game is: pineapple" / "Forbidden word: moon" / "forbidden topic (...): X"
-    re.compile(r"(?i)forbidden\s+(?:subject|word|topic|term|thing|name)s?\b[^.\n:]{0,60}?(?:\bis\b|\bare\b|:)\s*:?\s*[\"'“]?([^\"'”\n.;:()]{2,40})"),
-    # never mention "pineapple" / must not say the word 'moon'
-    re.compile(r"(?i)(?:never|not|n't|cannot)\s+(?:mention|say|name|use|utter|discuss|write|reveal)\b[^\"'“\n.]{0,30}[\"'“]([^\"'”\n]{2,40})[\"'”]"),
+    # "The forbidden subject of this game is: pineapple" / "Banned word: moon" / "forbidden topic (...): X"
+    re.compile(r"(?i)(?:forbidden|banned|prohibited|taboo)\s+(?:subject|word|topic|term|thing|name)s?\b[^.\n:]{0,60}?(?:\bis\b|\bare\b|:)\s*:?\s*[\"'“]?([^\"'”\n.;:()]{2,40})"),
+    # never mention "pineapple" / must not say the word 'moon' / not allowed to say "pineapple"
+    re.compile(r"(?i)(?:(?:never|not|n't|cannot)\s+(?:(?:allowed|permitted)\s+to\s+)?(?:mention|say|name|use|utter|discuss|write|reveal)|avoid\s+(?:mentioning|saying|naming|using))\b[^.;,\n\"'“]{0,25}[\"'“]([^\"'”\n]{2,40})[\"'”]"),
 ]
 _META_WORDS = {"forbidden", "subject", "mention", "answer", "cannot"}
 _PRONOUNS = {"it", "this", "that", "them", "anything", "something", "the", "a"}
@@ -179,31 +180,17 @@ def is_meta_forbidden(subject: str) -> bool:
 
 
 def extract_forbidden(rules: str) -> list[str]:
-    """Forbidden subjects as named by rules/observations. Shared by cold fallback_spec and ChatPolicy."""
+    """Forbidden subjects only where text explicitly names them, so quoted answers ('Paris') are not captured."""
     found: list[str] = []
     seen: set[str] = set()
 
-    def _keep(raw: str) -> None:
-        item = raw.strip(" \t-*_")
-        key = item.casefold()
-        if len(item) >= 2 and key not in seen and not is_meta_forbidden(item):
-            seen.add(key)
-            found.append(item[:40])
-
     for rx in _FORBIDDEN_NAMED:
         for match in rx.finditer(rules or ""):
-            _keep(match.group(1))
-    lowered = (rules or "").lower()
-    for cue in _SPEECH_CUES:
-        start = 0
-        while True:
-            index = lowered.find(cue, start)
-            if index < 0:
-                break
-            window = (rules or "")[index : index + 220]
-            for match in re.finditer(r"[\"“']([^\"“”'\n]{2,40})[\"”']", window):
-                _keep(match.group(1))
-            start = index + len(cue)
+            item = match.group(1).strip(" \t-*_")
+            key = item.casefold()
+            if len(item) >= 2 and key not in seen and not is_meta_forbidden(item):
+                seen.add(key)
+                found.append(item[:40])
     return found[:6]
 
 

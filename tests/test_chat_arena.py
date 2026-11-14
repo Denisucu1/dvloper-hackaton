@@ -189,9 +189,11 @@ class LearnForbiddenTests(unittest.TestCase):
 
     def test_own_quoted_answers_are_not_learned_as_forbidden(self):
         # Seen live: the observation quotes our earlier answer right after the speech rule.
+        from harness.spec import extract_forbidden
         observation = ("Forbidden subject (never mention it, in answers or chat): pineapple\n"
                        "Your answers so far:\n  Q: What is the capital of France? -> you answered 'Paris' (+1)\n"
                        'It is YOUR turn: "answer <text>".')
+        self.assertEqual(extract_forbidden(observation), ["pineapple"])
         chat = policy("guardrails")
         chat.learn(observation)
         self.assertEqual(chat.subjects(), ["pineapple"])

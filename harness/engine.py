@@ -26,7 +26,11 @@ from .spec import Spec
 def _solvers() -> list:
     """Import the family solvers lazily: the harness must keep working if one is missing."""
     found = []
-    for module_name, class_name in (("solver_guess", "GuessingSolver"), ("solver_pig", "PigSolver")):
+    for module_name, class_name in (
+        ("solver_guess", "GuessingSolver"),
+        ("solver_pig", "PigSolver"),
+        ("solver_simul", "SimultaneousSolver"),
+    ):
         try:
             module = __import__(f"harness.{module_name}", fromlist=[class_name])
             found.append(getattr(module, class_name)())
@@ -130,6 +134,8 @@ class Engine:
             try:
                 if not solver.matches(game_id, self.spec):
                     continue
+                if hasattr(solver, "configure"):
+                    solver.configure(self.spec, self.rules)
                 action = solver.propose(
                     observation=observation, legal=legal, seat=seat, turn=turn,
                     timeout=max(0.2, min(1.0, timeout)),
