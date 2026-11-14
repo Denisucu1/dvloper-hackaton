@@ -493,7 +493,8 @@ class LazyAliasTests(unittest.TestCase):
                 calls = len(gateway.prompts)
                 decide.decide_turn(gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"),
                                    chat_policy=chat, msg={**msg, "turn": 3}, rules="A quiz.", deadline=12.0)
-                self.assertEqual(len(gateway.prompts), calls + 1)  # one decision call, no second alias call
+                # the decision (asked config.VOTERS times in parallel when no code move exists), no second alias call
+                self.assertEqual(len(gateway.prompts), calls + config.VOTERS)
             finally:
                 config.MEMORY_DIR = old
 
@@ -951,6 +952,93 @@ class LessonsTests(unittest.TestCase):
         shown = lessons.load("g", self.RULES)
         self.assertEqual(len(shown), config.LESSONS_SHOWN)
         self.assertEqual(shown[0], "lesson number 14 for this game")
+
+
+class VoteTests(unittest.TestCase):
+    """No code move: several answers in parallel, the move most of them agree on is played."""
+
+    class Gateway(FakeGateway):
+        def __init__(self, moves):
+            super().__init__()
+            self.moves = list(moves)
+            self.lock = __import__("threading").Lock()
+
+        def ask(self, system, user, **kwargs):
+            with self.lock:
+                self.prompts.append(user)
+                move = self.moves.pop(0) if self.moves else None
+            return json.dumps({"intent": "x", "action": move, "chat": f"line for {move}"}) if move else ""
+
+    def play(self, moves, legal=("fold", "call", "raise"), family="deals", deadline=14.0):
+        spec = Spec(game_id="g", family=family)
+        gateway = self.Gateway(moves)
+        decision = decide.decide_turn(gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"),
+                                      chat_policy=ChatPolicy(spec, seed="t"),
+                                      msg={"observation": "o", "legal_actions": list(legal) if legal else None, "chat": [], "turn": 1, "seat": 0},
+                                      rules="R", deadline=deadline)
+        return decision, gateway
+
+    def test_majority_wins_and_the_line_belongs_to_the_winning_move(self):
+        old = config.VOTERS
+        config.VOTERS = 3
+        try:
+            decision, gateway = self.play(["call", "fold", "fold"], legal=None)
+            self.assertEqual(decision.action, "fold")
+            self.assertEqual(decision.chat, "line for fold")
+            self.assertEqual(len(gateway.prompts), 3)
+        finally:
+            config.VOTERS = old
+
+    def test_same_move_in_different_dress_is_one_vote(self):
+        self.assertEqual(decide._vote_key("Answer 1874.", None), decide._vote_key("answer 1874", None))
+        self.assertEqual(decide._vote_key("play B2", ["A1", "B2"]), decide._vote_key("b2", ["A1", "B2"]))
+
+    def test_lost_voters_do_not_lose_the_turn(self):
+        old = config.VOTERS
+        config.VOTERS = 3
+        try:
+            decision, _ = self.play(["answer unknown", None, None], legal=None, family="truth")
+            self.assertEqual(decision.action, "answer unknown")
+        finally:
+            config.VOTERS = old
+
+    def test_one_call_when_the_clock_is_short_or_voting_is_off(self):
+        _, gateway = self.play(["call", "fold", "fold"], legal=None, deadline=6.0)
+        self.assertEqual(len(gateway.prompts), 1)
+        old = config.VOTERS
+        config.VOTERS = 1
+        try:
+            _, gateway = self.play(["call", "fold", "fold"], legal=None)
+            self.assertEqual(len(gateway.prompts), 1)
+        finally:
+            config.VOTERS = old
+
+
+class StrategyBriefTests(unittest.TestCase):
+    BRIEF = "WIN CONDITION\nMore chips after 8 hands.\n\nDECISION RULES\n1. IF you hold K THEN bet.\n" + "x" * 200
+
+    def test_brief_is_asked_with_deep_thinking_and_leads_the_playbook(self):
+        from harness import strategy
+        seen = {}
+
+        class Gateway(FakeGateway):
+            def ask(self, system, user, **kwargs):
+                seen.update(kwargs)
+                return StrategyBriefTests.BRIEF
+
+        brief = strategy.build(Gateway(), "RULES", Spec(family="bluff"), timeout=200)
+        self.assertEqual(seen["thinking"], "enabled")
+        self.assertEqual(seen["budget_tokens"], config.STRATEGY_THINKING)
+        merged = strategy.merge("- old note", brief)
+        self.assertTrue(merged.startswith(strategy.MARK))
+        self.assertIn("- old note", merged)
+        self.assertEqual(strategy.merge(merged, brief).count(strategy.MARK), 1)  # idempotent
+
+    def test_garbage_or_no_clock_leaves_the_playbook_alone(self):
+        from harness import strategy
+        self.assertEqual(strategy.build(FakeGateway(text="Sure! Here is some advice."), "R", Spec(), timeout=200), "")
+        self.assertEqual(strategy.build(FakeGateway(text=self.BRIEF), "R", Spec(), timeout=5), "")
+        self.assertEqual(strategy.merge("- old note", ""), "- old note")
 
 
 class ThinkingFamiliesTests(unittest.TestCase):

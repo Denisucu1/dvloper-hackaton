@@ -602,6 +602,47 @@ def _cred_line(chat_policy: ChatPolicy) -> str:
     return head + verdict + "\n"
 
 
+def _vote_key(action: object, legal: list[str] | None) -> str:
+    """Two answers are the same vote when they are the same move, whatever the punctuation or case."""
+    normal = actions.normalize(action, legal) if legal else actions.clean(action)
+    return re.sub(r"[^a-z0-9]+", " ", str(normal or "").lower()).strip()
+
+
+def _vote(gateway: Gateway, system: str, user: str, ask: dict, voters: int, legal: list[str] | None) -> dict | None:
+    """Ask `voters` times in parallel and return the answer whose move most of them chose.
+
+    With a legal list, an answer that is not on the list does not vote. A tie goes to the earliest answer.
+    One voter is exactly the old single call. Never raises; returns None when nothing usable came back.
+    """
+    if voters <= 1:
+        return parse_answer(gateway.ask(system, user, **ask))
+    answers: list[dict | None] = [None] * voters
+
+    def one(index: int) -> None:
+        try:
+            answers[index] = parse_answer(gateway.ask(system, user, **ask))
+        except Exception as exc:  # noqa: BLE001 - a lost vote is not a lost turn
+            log("voter failed:", type(exc).__name__)
+
+    threads = [threading.Thread(target=one, args=(i,), name=f"voter-{i}", daemon=True) for i in range(voters)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(float(ask.get("timeout") or 10.0) + 0.5)
+    tally: dict[str, list[dict]] = {}
+    for answer in answers:
+        if not answer:
+            continue
+        key = _vote_key(answer.get("action"), legal)
+        if key:
+            tally.setdefault(key, []).append(answer)
+    if not tally:
+        return next((answer for answer in answers if answer), None)
+    best = max(tally.values(), key=len)  # max keeps the first of equals: the earliest answer wins a tie
+    log(kv(vote=f"{len(best)}/{sum(len(v) for v in tally.values())}", options=len(tally), action=str(best[0].get("action"))[:40]))
+    return best[0]
+
+
 def _profile(chat_policy: ChatPolicy) -> str:
     line = chat_policy.profile_line()
     return f"OPPONENT MEMORY: {line}\n" if line else ""
@@ -716,7 +757,7 @@ def decide_turn(
         system = _SYSTEM.format(
             rules=_clip(rules, _limits(spec)[0]),
             spec=spec.prompt_block(),
-            playbook=_clip(playbook, 1800) or "(none)",
+            playbook=_clip(playbook, config.MAX_PLAYBOOK_CHARS) or "(none)",
             extra=_extra(spec),
         )
         secrets_now = chat_policy.private_values(observation)
@@ -758,17 +799,17 @@ def decide_turn(
             thinking = None  # not enough clock for a bounded thinking answer
         if thinking:
             log(f"thinking enabled ({thinking[1]}, budget {thinking[0]})")
-        data = parse_answer(
-            gateway.ask(
-                system,
-                user,
-                max_tokens=turnpolicy.MAX_TOKENS_WITH_THINKING if thinking else 420,
-                timeout=max(2.0, left - 1.0),
-                temperature=0.6,
-                thinking="enabled" if thinking else "disabled",
-                budget_tokens=thinking[0] if thinking else None,
-            )
+        ask = dict(
+            max_tokens=turnpolicy.MAX_TOKENS_WITH_THINKING if thinking else 420,
+            timeout=max(2.0, left - 1.0),
+            temperature=0.6,
+            thinking="enabled" if thinking else "disabled",
+            budget_tokens=thinking[0] if thinking else None,
         )
+        # No code move: the model decides alone, and one sample of a small model is a coin with a bias.
+        # Ask several times at once (same clock, a few hundredths of a cent) and play what most agree on.
+        voters = config.VOTERS if (proposal is None and left >= config.VOTE_MIN_SECONDS) else 1
+        data = _vote(gateway, system, user, ask, voters, legal_list)
         if data:
             candidate_action = data.get("action")
             candidate_chat = data.get("chat") or ""

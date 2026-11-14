@@ -246,6 +246,24 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
             if expanded_aliases:
                 notes.append(f"subagent: prep_guardrails cached {len(expanded_aliases)} aliases")
 
+    # The prep clock and budget are almost untouched at this point (measured: 13-25 s of 600, a quarter of
+    # a cent of 75). Spend some of both on a strategy brief worked out with deep thinking, and on the chat
+    # plan of every variant, so no match clock or match budget is spent on either.
+    left = seconds - (time.time() - started)
+    if data and gateway.affordable and left > config.STRATEGY_MIN_SECONDS + 150.0:
+        from . import chatplan, strategy
+
+        brief = strategy.build(gateway, rules_all, spec, timeout=left - 150.0)
+        if brief:
+            playbook = strategy.merge(playbook, brief)
+            notes.append("strategy brief written with thinking")
+        for variant in variants[:4]:
+            left = seconds - (time.time() - started)
+            if left < 150.0:
+                break
+            if chatplan.prepare(gateway, game_id, str(variant.get("rules") or ""), timeout=min(60.0, left - 120.0)):
+                notes.append(f"chat plan ready: {variant.get('label', '?')}")
+
     spec_doc = {**spec.to_dict(), "artifact_version": ARTIFACT_VERSION}
     memory.atomic_write_json(memory.artifact_path(game_id, fp, config.ARTIFACT_SPEC), spec_doc)
     memory.atomic_write_text(memory.artifact_path(game_id, fp, config.ARTIFACT_PLAYBOOK), playbook or "(no playbook)")

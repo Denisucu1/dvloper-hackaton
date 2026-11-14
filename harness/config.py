@@ -76,6 +76,17 @@ LESSONS_THINKING = int(os.environ.get("HARNESS_LESSONS_THINKING", "2000"))
 LESSONS_TIMEOUT = float(os.environ.get("HARNESS_LESSONS_TIMEOUT", "45"))
 LESSONS_KEPT = int(os.environ.get("HARNESS_LESSONS_KEPT", "9"))
 LESSONS_SHOWN = int(os.environ.get("HARNESS_LESSONS_SHOWN", "4"))
+# The strategy brief (harness/strategy.py): one prep call with a large thinking budget.
+STRATEGY = os.environ.get("HARNESS_STRATEGY", "1") == "1"
+STRATEGY_THINKING = int(os.environ.get("HARNESS_STRATEGY_THINKING", "8000"))
+STRATEGY_TIMEOUT = float(os.environ.get("HARNESS_STRATEGY_TIMEOUT", "150"))
+STRATEGY_MIN_SECONDS = float(os.environ.get("HARNESS_STRATEGY_MIN", "40"))
+STRATEGY_CHARS = int(os.environ.get("HARNESS_STRATEGY_CHARS", "2600"))
+MAX_PLAYBOOK_CHARS = int(os.environ.get("HARNESS_MAX_PLAYBOOK", "4200"))
+# Voting (decide.py): on a turn where no code move exists, this many answers are asked for in parallel and
+# the move most of them agree on is played. 1 switches voting off.
+VOTERS = int(os.environ.get("HARNESS_VOTERS", "3"))
+VOTE_MIN_SECONDS = float(os.environ.get("HARNESS_VOTE_MIN", "8"))
 # Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
 CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
 

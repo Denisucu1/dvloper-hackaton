@@ -48,7 +48,10 @@ class OfflineTraceTests(unittest.TestCase):
         self.assertTrue(sources and "generated model" in sources[0])
 
     def test_three_model_calls_and_no_network(self):
-        self.assertEqual(self.result["calls"], 3)
+        # spec, policy, simulator - plus, since the prep clock is used for more than a few seconds, the
+        # strategy brief and one chat plan per variant (the offline gateway answers those with nothing).
+        self.assertGreaterEqual(self.result["calls"], 3)
+        self.assertLessEqual(self.result["calls"], 3 + 1 + 4)
         for event in self.result["events"]:
             self.assertNotIn("http", event["detail"].lower())
 
