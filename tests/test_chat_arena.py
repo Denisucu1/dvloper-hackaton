@@ -1054,8 +1054,9 @@ class CouncilTests(unittest.TestCase):
     def test_lost_voices_do_not_lose_the_turn(self):
         decision, _ = self.play(["answer unknown", None, None], "answer unknown", legal=None, family="truth")
         self.assertEqual(decision.action, "answer unknown")
-        decision, _ = self.play([None, None, None], "answer 1874", legal=None, family="truth")  # no council at all
-        self.assertEqual(decision.action, "answer 1874")
+        # No voice answered at all: the chat-aware call decides alone, as before the council existed.
+        decision, _ = self.play([None, None, None], "offer 60", legal=None, family="unknown")
+        self.assertEqual(decision.action, "offer 60")
 
     def test_a_voice_off_the_legal_list_does_not_vote(self):
         decision, _ = self.play(["resign", "resign", "call"], "call")

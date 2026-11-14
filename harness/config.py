@@ -62,6 +62,7 @@ CRED_MAX_CHECKS = int(os.environ.get("HARNESS_CRED_CHECKS", "6"))
 CRED_EVERY = int(os.environ.get("HARNESS_CRED_EVERY", "3"))  # one check every N of our turns
 CRED_TIMEOUT = float(os.environ.get("HARNESS_CRED_TIMEOUT", "25"))
 # The per-game chat plan (harness/chatplan.py): one call with thinking, in prep or at the first start.
+CHATPLAN = os.environ.get("HARNESS_CHATPLAN", "1") == "1"
 CHATPLAN_THINKING = int(os.environ.get("HARNESS_CHATPLAN_THINKING", "2000"))
 CHATPLAN_TIMEOUT = float(os.environ.get("HARNESS_CHATPLAN_TIMEOUT", "45"))
 CHATPLAN_MIN_SECONDS = float(os.environ.get("HARNESS_CHATPLAN_MIN", "8"))

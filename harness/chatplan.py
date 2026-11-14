@@ -98,7 +98,8 @@ def load(game_id: object, rules: str) -> dict | None:
 
 def build(gateway: Gateway, rules: str, timeout: float) -> dict | None:
     """One call with thinking. Returns None on any failure: the generic tactics remain."""
-    if not gateway.affordable or timeout < config.CHATPLAN_MIN_SECONDS or not (rules or "").strip():
+    if (not config.CHATPLAN or not gateway.affordable or timeout < config.CHATPLAN_MIN_SECONDS
+            or not (rules or "").strip()):
         return None
     text = gateway.ask(
         _SYSTEM,
