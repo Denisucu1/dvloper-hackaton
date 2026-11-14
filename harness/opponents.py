@@ -29,6 +29,9 @@ def record(opponent: object, match_id: object, game_index: object, stats: dict, 
         data["chat"] = {key: int(stats.get(key) or 0) for key in _COUNTERS}
         if result:
             data.setdefault("results", {})[str(game_index)] = str(result)
+        if stats.get("claims_true") or stats.get("claims_false"):
+            # Per game: each game is checked by its own container against its own reveals.
+            data.setdefault("cred", {})[str(game_index)] = [int(stats.get("claims_true") or 0), int(stats.get("claims_false") or 0)]
         memory.atomic_write_json(path, data)
     except Exception as exc:  # noqa: BLE001 - a profile is a bonus, never a reason to fail
         log("opponent profile write failed:", type(exc).__name__)
@@ -36,7 +39,8 @@ def record(opponent: object, match_id: object, game_index: object, stats: dict, 
 
 def load(opponent: object, limit: int = 40) -> dict:
     """Everything we remember about this team, summed over the matches on file."""
-    profile = {"games": 0, "wins": 0, "losses": 0, "draws": 0, **{key: 0 for key in _COUNTERS}}
+    profile = {"games": 0, "wins": 0, "losses": 0, "draws": 0, "claims_true": 0, "claims_false": 0,
+               **{key: 0 for key in _COUNTERS}}
     if not opponent:
         return profile
     try:
@@ -47,6 +51,10 @@ def load(opponent: object, limit: int = 40) -> dict:
             data = memory.read_json(path, default=None) or {}
             for key in _COUNTERS:
                 profile[key] += int((data.get("chat") or {}).get(key) or 0)
+            for pair in (data.get("cred") or {}).values():
+                if isinstance(pair, list) and len(pair) == 2:
+                    profile["claims_true"] += int(pair[0] or 0)
+                    profile["claims_false"] += int(pair[1] or 0)
             for result in (data.get("results") or {}).values():
                 profile["games"] += 1
                 bucket = {"win": "wins", "loss": "losses", "draw": "draws"}.get(str(result))

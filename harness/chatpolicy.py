@@ -290,6 +290,57 @@ _PROGRESS_TALK = re.compile(
 )
 
 
+# A "specific claim": the opponent, in the first person, naming a card, a number or a sign. These are the
+# lines a later reveal (a showdown, a revealed allocation) can prove true or false.
+_FIRST_PERSON = re.compile(r"(?i)\b(my|mine|i|i'm|i'll|i've|we|our|this)\b")
+_FACT_TOKEN = re.compile(
+    r"(?i)(\d+|\b(?:jack|queen|king|ace|pair|trips|flush|straight|rock|paper|scissors|heads|tails)\b"
+    r"|(?<![A-Za-z])[JQKA](?![A-Za-z])|\b(?:10|[2-9TJQKA])[shdc]\b)"
+)
+
+
+_RANKS = {"jack": "J", "queen": "Q", "king": "K", "ace": "A", "ten": "10"}
+_RANK = r"(10|[2-9]|[JQKA]|jack|queen|king|ace|ten)"
+_OWN_CARD = re.compile(rf"(?i)\b(?:my|this|our)\s+(?:pair of\s+|lone\s+|little\s+|big\s+)?{_RANK}s?\b")
+_REVEALED = re.compile(rf"(?i)\bopponent(?:'s card)?\s+(?:had|held|holds|has|showed|shows|revealed|was dealt)\s+(?:an?\s+|the\s+)?{_RANK}\b")
+_STAGE = re.compile(r"(?i)\b(hand|round|deal)\s+(\d+)")
+
+
+def _rank(token: str) -> str:
+    token = token.strip().lower()
+    return _RANKS.get(token, token.upper())
+
+
+def verify_card_claims(claims: list[dict], when: dict[str, str], observation: str) -> tuple[int, int]:
+    """(true, false): the opponent's "my K" / "this J" lines against the cards a showdown later revealed.
+
+    Exact and free: the claim carries the hand it was made in ("Hand 6 of 8"), the observation's history
+    has one line per hand, and "opponent had K" either matches or does not. A hand that ended in a fold
+    reveals nothing and is not counted. This is the one kind of claim code can check without a model.
+    """
+    true = false = 0
+    done: set[tuple[str, str]] = set()
+    for claim in claims:
+        said = _OWN_CARD.search(claim["text"])
+        stage = _STAGE.search(when.get(claim["text"], ""))
+        if not said or not stage:
+            continue
+        label, number = stage.group(1), stage.group(2)
+        key = (number, _rank(said.group(1)))
+        if key in done:
+            continue  # the same card named twice in one hand is one claim
+        for line in re.findall(rf"(?im)^\s*{label}\s+{number}\b[^\n]*$", observation or ""):
+            shown = _REVEALED.search(line)
+            if shown:
+                done.add(key)
+                if _rank(shown.group(1)) == key[1]:
+                    true += 1
+                else:
+                    false += 1
+                break
+    return true, false
+
+
 def _shape(token: str) -> str:
     return re.sub(r"\d", "D", re.sub(r"[A-Za-z]", "L", token))
 
@@ -407,6 +458,16 @@ class ChatPolicy:
         self._forbidden: list[tuple[str, list[re.Pattern[str]]]] = []
         self._learned: set[int] = set()
         self._aliases: list[tuple[str, list[re.Pattern[str]]]] = []  # other names of the subject: chat only
+        self.cred: dict = {"true": 0, "false": 0}  # their checkable claims vs what the game revealed
+        self.cred_seen = ""  # the claims and the reveal state already checked: no second call for the same facts
+        self.cred_checks = 0
+        self.stage_prev = ""  # the hand or round shown at our previous decision
+        self.cred_turns = 0
+        self.cred_thread = None  # the background claim check, if one is running
+        self.cred_fresh = False  # they made a specific claim since our last line
+        self.claim_when: dict[str, str] = {}  # claim text -> where the game stood when it was said
+        self.opponent = ""
+        self.gateway = None
         self.aliases_asked: set[str] = set()  # subjects whose other names were already looked up
         for subject in self.spec.forbidden_subjects:
             self._add_forbidden(str(subject))
@@ -475,6 +536,43 @@ class ChatPolicy:
         intel.claims = intel.claims[-6:]
         intel.offers = intel.offers[-4:]
         return intel
+
+    def specific_claims(self, chat_lines: list[dict] | None) -> list[dict]:
+        """Opponent lines that state something checkable about their own hidden state or next move.
+
+        "This K will collect", "I am submitting 16, 16 and a little something for F3". Injection-shaped
+        lines are left out: they are orders, not claims. `fresh` marks what was said since our last line.
+        """
+        lines = [line for line in (chat_lines or []) if isinstance(line, dict)]
+        last_own = max((i for i, line in enumerate(lines) if line.get("from") != "opponent"), default=-1)
+        found = []
+        for index, line in enumerate(lines):
+            if line.get("from") != "opponent" or line.get("kind") == "move":
+                continue
+            text = _one_line(line.get("text", ""))
+            if not text or not _FIRST_PERSON.search(text) or not _FACT_TOKEN.search(text):
+                continue
+            tags = self.tag(text)
+            if "injection" in tags or "authority" in tags:
+                continue
+            # In simultaneous games both lines of a round carry the same turn: theirs is new to us even
+            # when ours is listed after it.
+            own = lines[last_own] if last_own >= 0 else {}
+            same_round = own.get("game") == line.get("game") and own.get("turn") == line.get("turn")
+            found.append({"game": line.get("game"), "turn": line.get("turn"), "text": text,
+                          "fresh": index > last_own or same_round})
+        return found[-12:]
+
+    def credibility(self) -> tuple[str, int, int]:
+        """("reliable" | "unreliable" | "unproven", true, false): this game's checks plus what /memory
+        remembers about this opponent's earlier claims."""
+        true = int(self.cred.get("true", 0)) + int((self.profile or {}).get("claims_true", 0))
+        false = int(self.cred.get("false", 0)) + int((self.profile or {}).get("claims_false", 0))
+        if true >= 2 and false == 0 or true >= 6 and true >= 6 * false:
+            return "reliable", true, false
+        if false >= 2 and false * 2 >= true:
+            return "unreliable", true, false
+        return "unproven", true, false
 
     def opponent_claims(self, chat_lines: list[dict] | None) -> list[str]:
         """What the opponent actually said, for the code path (engine hints, claims, bluffs to test)."""
@@ -677,7 +775,8 @@ class ChatPolicy:
                  intel: ChatIntel | None = None, legal: list[str] | None = None) -> str:
         """Turn whatever the model said into a legal chat move, or fall back to a safe line."""
         text = _one_line(candidate)
-        text = re.sub(r"(?i)^(chat|line|say)\s*:\s*", "", text).strip().strip("\"'`").strip()
+        text = re.sub(r"(?i)^(chat|line|say)\s*:\s*", "", text).strip().strip("\"'`\u00ab\u00bb").strip()
+        text = text.replace("\u00ab", "'").replace("\u00bb", "'")  # seen in T1: the model copied our fence quotes
         text = text[: config.MAX_CHAT_CHARS]
         self.last_trim = ""
         text = self.coherent(text, action=action, legal=legal)

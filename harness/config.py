@@ -55,6 +55,12 @@ AUDIT_MIN_SECONDS = float(os.environ.get("HARNESS_AUDIT_MIN", "3.0"))
 AUDIT_THINKING_SECONDS = float(os.environ.get("HARNESS_AUDIT_THINKING", "10.5"))
 AUDIT_THINKING_CAP = float(os.environ.get("HARNESS_AUDIT_THINKING_CAP", "9.0"))
 AUDIT_FAST_CAP = float(os.environ.get("HARNESS_AUDIT_FAST_CAP", "4.0"))
+# Claim checks run in the background with thinking on (6-7 s measured): a bound on how many per game and
+# on how long one may take.
+CRED_LLM = os.environ.get("HARNESS_CRED_LLM", "0") == "1"
+CRED_MAX_CHECKS = int(os.environ.get("HARNESS_CRED_CHECKS", "6"))
+CRED_EVERY = int(os.environ.get("HARNESS_CRED_EVERY", "3"))  # one check every N of our turns
+CRED_TIMEOUT = float(os.environ.get("HARNESS_CRED_TIMEOUT", "25"))
 # Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
 CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
 
