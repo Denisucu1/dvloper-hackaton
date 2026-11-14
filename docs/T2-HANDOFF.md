@@ -124,6 +124,31 @@ card, pot and the betting line, and use pot odds/hand strength. It runs before t
 872 fuzzed decisions, 0 declines, 0.1 ms. A real match shows `solver leduc: check/bet`. The parser is
 conservative: Kuhn and one-card text are declined, so it cannot misplay the wrong shape.
 
+
+## T1-shape reconstructions (not official engines)
+
+The official T1 game files are not in the repo or any remote branch. To still exercise the T1 ids and
+shapes, four arena games were added as **reconstructions from the brief + our probes**; each module
+docstring says so explicitly:
+
+| id | shape | notes |
+|---|---|---|
+| `connect_four` | 7x9 connect-5 (T1 shape) and 7x6 connect-4 | inherits the shared Connect4 logic |
+| `mini_poker` | simplified Leduc, 1 or 3 hands | observation keeps the layout `solver_leduc` parses |
+| `colonel_blotto` | 5x100 with reserves, 3x20, 3x4 | unspent troops carry over; legal_actions capped at 50 |
+| `wordle_duel` | Wordle duel, 6/4 guesses | free-text actions, hidden secret |
+
+Run them like any game:
+
+```bash
+python3 scripts/pipeline.py --fast
+python3 scripts/bench.py --label t1-shape --games connect_four,mini_poker,colonel_blotto,wordle_duel   --seeds 1 --best-of 1
+```
+
+These results are **indicative**: they test our harness on the right shapes and ids, not against the
+organizers' engines. If the official files are released, drop them in `arena-lite/arena/games/` (same ids)
+and rerun the same commands.
+
 ## Known limits / next
 
 - Tournament self-play needs the generated `Model` to be usable from `__init__` (no observation text).
