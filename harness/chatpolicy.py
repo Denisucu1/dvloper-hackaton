@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from . import config
 from .log import log
 from .spec import Spec, extract_forbidden as extract_forbidden_subjects, is_meta_forbidden
+from .subagents import PsychologistSubagent, TruthMeter
 
 # --------------------------------------------------------------------------- fallback lines
 # Deterministic, safe in every game, never empty (6.2). Rotated so a match does not read as one canned
@@ -408,8 +409,24 @@ class ChatPolicy:
         self._learned: set[int] = set()
         self._aliases: list[tuple[str, list[re.Pattern[str]]]] = []  # other names of the subject: chat only
         self.aliases_asked: set[str] = set()  # subjects whose other names were already looked up
+        self.truth_meter = TruthMeter()
+        self.psychologist = PsychologistSubagent()
         for subject in self.spec.forbidden_subjects:
             self._add_forbidden(str(subject))
+
+    def observe_truth(self, observation: str, claims: list[str] | None) -> str:
+        """Update TruthMeter with revealed opponent moves and return a sanitized credibility summary."""
+        self.truth_meter.observe_turn(observation, claims)
+        return self.truth_meter.summary_for_strategist()
+
+    def mirror_guidance(self, action: str | None, observation: str = "") -> str:
+        """Ask PsychologistSubagent for tactical Mirror Misdirection chat guidance."""
+        return self.psychologist.mirror_guidance(
+            family=self.spec.family,
+            action=action,
+            observation=observation,
+            truth_meter=self.truth_meter,
+        )
 
     def _add_forbidden(self, subject: str) -> None:
         key = subject.strip().lower()

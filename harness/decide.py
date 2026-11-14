@@ -27,6 +27,7 @@ from .engine import Engine
 from .llm import Gateway, extract_json
 from .log import kv, log
 from .spec import Spec
+from .subagents import StrategistSubagent
 
 _SYSTEM = """You are the decision core of a two-player game bot in a live tournament. Every answer is ONE decision
 with two parts: a game move, and a chat line that the opponent's AI and the audience read.
@@ -513,6 +514,7 @@ def decide_turn(
     learn_aliases(gateway, chat_policy, timeout=min(3.0, deadline / 4))
     intel = chat_policy.analyze(chat_lines, legal_list)
     claims = chat_policy.opponent_claims(chat_lines)
+    truth_summary = chat_policy.observe_truth(observation, claims)
 
     proposal, intent = engine.propose(
         observation=observation,
@@ -524,8 +526,39 @@ def decide_turn(
         timeout=max(1.0, min(4.0, deadline - 4.0)),
     )
 
+    # Chat-isolated StrategistSubagent: when no deterministic solver/simulator move exists and
+    # the opponent is actively running multi-line prompt injection with a live gateway, compute
+    # the move in a clean context that NEVER sees raw opponent chat (Rule 7.6).
+    if (
+        proposal is None
+        and getattr(gateway, "calls", 0) > 0
+        and gateway.affordable
+        and deadline > 12.0
+        and intel.injections >= 2
+    ):
+        strat_action, strat_intent = StrategistSubagent().propose_action(
+            gateway,
+            spec=spec,
+            rules=rules,
+            playbook=playbook,
+            observation=observation,
+            legal=legal_list,
+            engine_hint=intent,
+            truth_summary=truth_summary,
+            forbidden_note=_never_write(chat_policy),
+            thinking=(deadline >= 11.0 and spec.family in ("truth", "deals", "bluff", "read_opponent")),
+            timeout=min(4.5, max(2.0, (deadline - 3.5) * 0.45)),
+        )
+        verified_strat = actions.normalize(strat_action, legal_list) if strat_action else None
+        if verified_strat and not chat_policy.forbidden_hit(verified_strat):
+            proposal = verified_strat
+            intent = f"strategist solver: {strat_intent or 'chat-isolated move'}"
+
     engine_intent = intent  # "generated policy: ..." when a solver written in prep produced the move
     tactic, tactic_text = chat_policy.plan(intel)
+    mirror_hint = chat_policy.mirror_guidance(proposal, observation)
+    if mirror_hint:
+        tactic_text = f"{tactic_text} ({mirror_hint})"
     candidate_action, source = proposal, "engine"
     candidate_chat, read = "", ""
     if gateway.affordable and deadline > 4.0:
@@ -662,6 +695,19 @@ def decide_turn(
         log(f"forbidden subject in move {action[:60]!r} -> {scrubbed[:60]!r}")
         action = scrubbed or (proposal if proposal and not chat_policy.forbidden_hit(proposal) else "")
         source = "scrubbed"
+
+    # Universal Format Guard for open-action-space games (Blotto, Wordle, Connect-K, Guess the Number)
+    if legal_list is None:
+        guarded = actions.enforce_format(
+            action,
+            observation=observation,
+            rules=rules,
+            legal=legal_list,
+            avoid=avoid,
+        )
+        if guarded and guarded != action and not chat_policy.forbidden_hit(guarded):
+            log(f"format guard repaired {action!r} -> {guarded!r}")
+            action = guarded
 
     if action is None or action == "":
         # No legal list and nothing usable: prefer concrete fallback_action or clean non-template example.

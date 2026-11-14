@@ -220,6 +220,7 @@ def build_model(
         samples=_sample_blob(samples),
     )
     error = "no standalone Python module with class Model"
+    last_source = ""
 
     for attempt in (1, 2):
         left = _left(started, timeout)
@@ -232,7 +233,11 @@ def build_model(
 
         # Hard ceiling: half the total budget, so a slow answer cannot eat the validation window.
         ask_timeout = min(float(timeout) / 2.0, max(0.5, left - 5.0))
-        prompt = user if attempt == 1 else f"{user}\n\n{_FIX.format(error=error[:600])}"
+        if attempt == 1:
+            prompt = user
+        else:
+            prev_block = f"\n\nYOUR PREVIOUS MODULE THAT FAILED:\n```python\n{last_source[:4500]}\n```" if last_source else ""
+            prompt = f"{user}{prev_block}\n\n{_FIX.format(error=error[:600])}"
         try:
             text = gateway.ask(_SYSTEM, prompt, max_tokens=4000, timeout=ask_timeout, temperature=0.2)
         except Exception as exc:  # noqa: BLE001 - prep must survive a gateway hiccup and try once more
@@ -248,6 +253,7 @@ def build_model(
             log(kv(simgen="attempt", n=attempt, error="no code"))
             continue
 
+        last_source = source
         memory.atomic_write_text(path, source)
         validate_timeout = max(2.0, min(30.0, _left(started, timeout) - 1.0))
         ok, reason = sandbox.validate_model(str(path), samples, rules, timeout=validate_timeout)

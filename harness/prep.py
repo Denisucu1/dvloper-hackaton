@@ -206,6 +206,46 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     if not spec.family or spec.family == "unknown":
         spec.family = fallback_spec(game_id, rules_all, samples, fp).family
 
+    # Run specialist Prep Subagents on the free prep budget when clock allows (Rule 7.6 & 9.3)
+    rem_after_spec = seconds - (time.time() - started)
+    if data and gateway.affordable and rem_after_spec > 60.0:
+        from .subagents import PrepAnalystSubagent, PrepGuardrailsSubagent
+
+        if not simgen_worthwhile(spec)[0]:
+            analyst_info = PrepAnalystSubagent().run(
+                gateway,
+                rules=rules_all,
+                spec=spec,
+                playbook=playbook,
+                timeout=min(30.0, max(6.0, rem_after_spec * 0.12)),
+            )
+            if analyst_info:
+                extra_lines = []
+                for k_label, k_key in (
+                    ("INVARIANTS", "invariants"),
+                    ("ENDGAME", "endgame_trigger"),
+                    ("CHAT PLAN", "chat_deception_plan"),
+                ):
+                    val = str(analyst_info.get(k_key) or "").strip()
+                    if val:
+                        extra_lines.append(f"- [{k_label}] {val}")
+                if extra_lines:
+                    playbook = (playbook + "\n" + "\n".join(extra_lines)).strip()
+                for extra_word in analyst_info.get("extra_forbidden") or ():
+                    w_str = str(extra_word).strip()
+                    if w_str and w_str not in spec.forbidden_subjects:
+                        spec.forbidden_subjects.append(w_str)
+                notes.append("subagent: prep_analyst enriched playbook")
+
+        if spec.forbidden_subjects:
+            expanded_aliases = PrepGuardrailsSubagent().run(
+                gateway,
+                subjects=spec.forbidden_subjects,
+                timeout=min(25.0, max(5.0, (seconds - (time.time() - started)) * 0.10)),
+            )
+            if expanded_aliases:
+                notes.append(f"subagent: prep_guardrails cached {len(expanded_aliases)} aliases")
+
     spec_doc = {**spec.to_dict(), "artifact_version": ARTIFACT_VERSION}
     memory.atomic_write_json(memory.artifact_path(game_id, fp, config.ARTIFACT_SPEC), spec_doc)
     memory.atomic_write_text(memory.artifact_path(game_id, fp, config.ARTIFACT_PLAYBOOK), playbook or "(no playbook)")
@@ -339,12 +379,17 @@ def _build_genpolicy(
         samples_blob="\n\n".join(samples_chunks),
     )
     error = ""
+    last_source = ""
     for attempt in (1, 2):
-        prompt = user if attempt == 1 else user + "\n\n" + _GEN_FIX.format(error=error)
+        if attempt == 1:
+            prompt = user
+        else:
+            prev_block = f"\n\nYOUR PREVIOUS MODULE THAT FAILED:\n```python\n{last_source[:4000]}\n```" if last_source else ""
+            prompt = user + prev_block + "\n\n" + _GEN_FIX.format(error=error)
         text = gateway.ask(
             _GEN_SYSTEM if attempt == 1 else "You fix standalone Python 3 game modules.",
             prompt,
-            max_tokens=1800,
+            max_tokens=3500,
             timeout=timeout / 2,
             temperature=0.2,
         )
@@ -352,6 +397,7 @@ def _build_genpolicy(
         if not source:
             error = "no valid Python `def choose(...)` function returned"
             continue
+        last_source = source
         memory.atomic_write_text(path, source)
         ok, reason = sandbox.validate_module(str(path), samples)
         notes.append(f"genpolicy attempt {attempt}: {reason}")
