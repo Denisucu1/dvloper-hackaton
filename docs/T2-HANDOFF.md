@@ -48,6 +48,34 @@ games, otherwise search is kept. Forcing every family is still possible with `HA
   positives; Truth abstains on invented numbers and on answers copied from the opponent's chat.
 - Probe report: 14 components, 180 observations, 100.0/100, 0.44 s.
 
+
+## Testing pipeline (new)
+
+One command runs the whole local acceptance suite:
+
+```bash
+python3 scripts/pipeline.py                 # offline: compile, tests, probes, protocol, games, prep trace
+python3 scripts/pipeline.py --fast          # skip the slow protocol probe inside the report
+python3 scripts/pipeline.py --bench         # + real arena matches and the bench gate (uses the gateway)
+python3 scripts/pipeline.py --json out.json # machine-readable stage results
+```
+
+Measured: **6/6 stages, 8.6 s** offline. Each stage runs even if an earlier one fails; exit 1 on any
+failure. `scripts/game_smoke.py` checks variants/rules/observation/frame/legal→normalize/random
+playout/result for every game: **31/31 variant checks pass**.
+
+## Games added in this lab
+
+| Game | Family | What it exercises |
+|---|---|---|
+| `tg_kuhn_probe` | bluff | 3-card Kuhn, 1 or 3 hands; J/Q/K ranks so the CFR parser understands it; live match shows `solver cfr` decisions |
+| `tg_dice_probe` | chance | one-die/two-die push-your-luck under a non-practice id |
+| `tg_wordle_probe` | guessing | free-text five-letter guesses (`legal_actions` null) for the non-board policy path |
+| `tg_auction_probe` | deals | sealed-bid auction, private values, simultaneous bids |
+
+Plus the existing `tg_connect4` (now with the 7x9 connect-5 shape), `tg_blotto_probe`, `tg_chess`,
+`tg_bluff`, `tg_deals`, `tg_guardrails`, `tg_simul`, `tg_truth`.
+
 ## Known limits / next
 
 - Tournament self-play needs the generated `Model` to be usable from `__init__` (no observation text).
