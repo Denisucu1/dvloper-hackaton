@@ -55,12 +55,17 @@ class SimultaneousTests(unittest.TestCase):
         deals_spec = Spec(game_id="auction", family="deals", simultaneous=True)
         self.assertFalse(solver.matches("auction", deals_spec))
         sim_spec = Spec(game_id="sim", family="read_opponent", simultaneous=True)
-        self.assertIsNone(
-            solver.propose(
-                observation="Round 1",
-                legal=["offer 10", "offer 20", "offer 30"],
-                seat=0,
+        for sample_actions in (["offer 10", "offer 20", "offer 30"], ["pick 1", "pick 5", "pick 9"]):
+            self.assertIsNone(
+                solver.propose(observation="Round 1", legal=sample_actions, seat=0)
             )
+        solver.configure(sim_spec, "", has_model=True)
+        self.assertIsNone(
+            solver.propose(observation="Round 1", legal=["left", "right"], seat=0)
+        )
+        self.assertIn(
+            solver.propose(observation="Round 1", legal=["rock", "paper", "scissors"], seat=0),
+            {"rock", "paper", "scissors"},
         )
 
 

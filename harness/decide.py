@@ -224,6 +224,18 @@ def _profile(chat_policy: ChatPolicy) -> str:
     return f"OPPONENT MEMORY: {line}\n" if line else ""
 
 
+def _engine_hint(proposal: str | None, intent: str) -> str:
+    if not proposal:
+        return "\nYOUR CODE HAD NO SUGGESTION.\n"
+    if "simul solver:" in intent:
+        guidance = "Prefer keeping this randomized mixed-strategy move unless you spot a clear rule exception."
+    elif " solver:" in intent or intent.startswith("generated model search:"):
+        guidance = "Prefer keeping this computed move unless you spot a clear rule or board mistake in it."
+    else:
+        guidance = "You may override it."
+    return f"\nYOUR CODE'S SUGGESTION: {proposal!r} ({intent}). {guidance}\n"
+
+
 def decide_turn(
     *,
     gateway: Gateway,
@@ -282,15 +294,7 @@ def decide_turn(
                 if legal_list is None and spec.action_format
                 else ""
             ),
-            engine_hint=(
-                (
-                    f"\nYOUR CODE'S SUGGESTION: {proposal!r} ({intent}). Prefer keeping this randomized mixed-strategy move unless you spot a clear rule exception.\n"
-                    if "simul solver:" in intent
-                    else f"\nYOUR CODE'S SUGGESTION: {proposal!r} ({intent}). You may override it.\n"
-                )
-                if proposal
-                else "\nYOUR CODE HAD NO SUGGESTION.\n"
-            ),
+            engine_hint=_engine_hint(proposal, intent),
             warning=(
                 f"\nWARNING: your previous answer {msg['warning'].get('rejected')!r} was rejected "
                 f"({msg['warning'].get('reason')}). Use the exact format; a second bad answer loses the game.\n"

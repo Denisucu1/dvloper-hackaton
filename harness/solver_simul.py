@@ -22,7 +22,9 @@ _ROUND_PAIR = re.compile(r"Round\s+\d+\s*:\s*([a-z0-9_-]+)\s*/\s*([a-z0-9_-]+)",
 _OPP_PLAYED = re.compile(
     r"\bopponent(?:'s)?\s+(?:played|chose|picked|used)\s+([a-z0-9_-]+)", re.IGNORECASE
 )
-_NUMERIC_LIKE = re.compile(r"^(?:\d+|(?:offer|bid|bet|raise|guess|answer)\s+.+)$", re.IGNORECASE)
+_NUMERIC_LIKE = re.compile(
+    r"^(?:\d+|(?:offer|bid|bet|raise|guess|answer|pick)\s+.+|.*\s\d+)$", re.IGNORECASE
+)
 
 
 def _rps_map(legal: list[str]) -> dict[str, str] | None:
@@ -106,11 +108,13 @@ class SimultaneousSolver:
 
     def __init__(self) -> None:
         self.rules_text = ""
+        self.has_model = False
 
-    def configure(self, spec: object, rules: str = "") -> None:
+    def configure(self, spec: object, rules: str = "", has_model: bool = False) -> None:
         scoring = str(getattr(spec, "scoring", "") or "")
         notes = str(getattr(spec, "winning_idea", "") or "")
         self.rules_text = "\n".join(part for part in (rules, scoring, notes) if part)
+        self.has_model = bool(has_model)
 
     def matches(self, game_id: str, spec: object) -> bool:
         family = str(getattr(spec, "family", "") or "").lower()
@@ -143,4 +147,7 @@ class SimultaneousSolver:
             chosen_key = _RNG.choices(list(_RPS), weights=weights, k=1)[0]
             return rps[chosen_key]
 
+        # Let a validated generated simulator (joint MCTS) handle non-RPS simultaneous games when present.
+        if self.has_model:
+            return None
         return _RNG.choice(clean_legal)

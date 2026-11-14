@@ -166,7 +166,11 @@ class Engine:
                 if not solver.matches(game_id, self.spec):
                     continue
                 if hasattr(solver, "configure"):
-                    solver.configure(self.spec, self.rules)
+                    solver.configure(
+                        self.spec,
+                        self.rules,
+                        has_model=bool(self.model_path and self.model_failures < 3),
+                    )
                 action = solver.propose(
                     observation=observation, legal=legal, seat=seat, turn=turn,
                     timeout=max(0.2, min(1.0, timeout)),
