@@ -7,7 +7,11 @@
 AGENTS.md
 GEMINI.md
 README.md
+CHANGELOG.md
+PROTOCOL.md
 docs/
+Makefile
+scripts/
 
 .env
 .env.*
@@ -19,6 +23,7 @@ secrets.*
 *.pem
 
 arena-lite/
+starter/
 results/
 logs/
 memory/
