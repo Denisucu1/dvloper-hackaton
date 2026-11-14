@@ -186,13 +186,19 @@ def parse_leduc_observation(
     )
 
 
-def _hand_value(private: str, community: str | None) -> tuple[int, int]:
-    """(is_pair, rank): with one community card a pair beats any unpaired hand."""
+def _hand_value(private: str, community: str | None) -> tuple[int, ...]:
+    """A lexicographically comparable hand: pairs beat unpaired hands, and the kicker counts.
+
+    Pairs are ``(2, rank)``; unpaired hands are ``(1, max_rank, min_rank)``. Keeping both ranks
+    means two unpaired hands with the same high card are no longer equal: private J with a K on
+    the board ``(1, 2, 0)`` correctly loses to private Q with that same K ``(1, 2, 1)``.
+    """
     if community is None:
-        return (0, _RANK[private])
+        return (1, _RANK[private], _RANK[private])
     if private == community:
-        return (1, _RANK[private])
-    return (0, max(_RANK[private], _RANK[community]))
+        return (2, _RANK[private])
+    high, low = sorted((_RANK[private], _RANK[community]), reverse=True)
+    return (1, high, low)
 
 
 def _equity(private: str, community: str | None) -> float:

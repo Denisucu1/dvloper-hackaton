@@ -171,6 +171,39 @@ class IntelligenceAnalysisTests(unittest.TestCase):
             self.assertIn("INTELLIGENCE SKIPPED", completed.stdout)
 
 
+def _connect_observation(bottom: str, rows: int = 6, cols: int = 7, connect: int = 4) -> str:
+    header = "   " + " ".join(chr(ord("A") + c) for c in range(cols))
+    board = [["."] * cols for _ in range(rows - 1)] + [list(bottom.replace(" ", ""))]
+    lines = [f"CONNECT FOUR - {cols}x{rows}, connect {connect}. "
+             f"You are Player 0 and play X; the opponent plays O.", header]
+    for index, cells in enumerate(board, 1):
+        lines.append(f"{index:>2} " + " ".join(cells))
+    open_actions = ", ".join(f"drop {chr(ord('A') + c)}" for c in range(cols))
+    lines.append("Drops so far: (none yet)")
+    lines.append(f"Open columns: {open_actions}")
+    lines.append('It is YOUR turn. Answer with "drop <column letter>".')
+    return "\n".join(lines)
+
+
+class ConnectKTacticTests(unittest.TestCase):
+    def test_immediate_win_is_forced(self):
+        observation = _connect_observation("XXX....")
+        self.assertEqual(intelligence._think_ahead_verdict(observation, "drop D"), (True, True))
+        self.assertEqual(intelligence._think_ahead_verdict(observation, "drop A"), (True, False))
+
+    def test_immediate_opponent_win_must_be_blocked(self):
+        observation = _connect_observation("OOO....")
+        self.assertEqual(intelligence._think_ahead_verdict(observation, "drop D"), (True, True))
+        self.assertEqual(intelligence._think_ahead_verdict(observation, "drop A"), (True, False))
+
+    def test_quiet_position_is_unjudged(self):
+        observation = _connect_observation(".......")
+        self.assertEqual(intelligence._think_ahead_verdict(observation, "drop A"), (False, False))
+
+    def test_unparseable_observation_is_unjudged(self):
+        self.assertEqual(intelligence._think_ahead_verdict("not a board", "drop A"), (False, False))
+
+
 class TacticMatchTests(unittest.TestCase):
     def test_numeric_offer_quality_tolerance(self):
         self.assertEqual(intelligence._tactic_match("deals", "offer 60", "offer 56"), (True, True))

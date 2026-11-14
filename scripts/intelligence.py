@@ -32,7 +32,12 @@ Tactics matching policy (numeric actions are not strings):
       worse offer by more than 5 is a disagreement;
     - deals-family ``accept`` / ``walk``: exact match only;
     - ``bid <n>`` anywhere: exact matches count, non-matches are UNJUDGED (bids are not comparable
-      without the private hand, so they must not lower the score).
+      without the private hand, so they must not lower the score);
+    - think_ahead / Connect-K: no anytime search comparison. The observation is parsed with
+      ``harness.solver_grid.parse_connect_k``; a position is judged only when we have an immediate
+      winning drop (that column is forced) or, failing that, the opponent has an immediate win (any
+      blocking column is forced). Positions with no immediate tactic are UNJUDGED. This is a
+      deterministic blunder check (missed win / missed block), not a time-budget measurement.
 
 The JSON breakdown records judged/agree decisions per reference family, so every tactics point is
 auditable. Confidence is high when judged >= 10 and rounds >= 3, medium when judged >= 3, low
@@ -389,6 +394,81 @@ def _points(legal: int, total: int, illegal: int, empty: int, errors: int, forfe
     return WEIGHTS["legality"] * fraction, fraction
 
 
+def _connect_forced_actions(observation: str) -> list[str] | None:
+    """Deterministic Connect-K blunder check: immediate wins for us, else the opponent's threats.
+
+    Returns observation-spelled actions (``drop E``) that are forced, ``[]`` when the position has no
+    immediate tactic, or ``None`` when the observation cannot be parsed. Never raises.
+    """
+    try:
+        from harness.solver_grid import parse_connect_k
+
+        state = parse_connect_k(observation)
+    except Exception:  # noqa: BLE001 - a parser bug means this decision is unjudged
+        return None
+    if not state:
+        return None
+    try:
+        rows = int(state["rows"])
+        cols = int(state["cols"])
+        k = int(state["k"])
+        board = [list(row) for row in state["board"]]
+        me = str(state.get("me") or "X")
+        opp = str(state.get("opp") or ("O" if me == "X" else "X"))
+        open_cols = [int(c) for c in (state.get("open_cols") or [])]
+    except Exception:  # noqa: BLE001
+        return None
+
+    def landing(col: int) -> int:
+        for row in range(rows - 1, -1, -1):
+            if board[row][col] == ".":
+                return row
+        return -1
+
+    def wins(col: int, piece: str) -> bool:
+        row = landing(col)
+        if row < 0:
+            return False
+        board[row][col] = piece
+        won = False
+        for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+            count = 1
+            for sign in (1, -1):
+                rr, cc = row + sign * dr, col + sign * dc
+                while 0 <= rr < rows and 0 <= cc < cols and board[rr][cc] == piece:
+                    count += 1
+                    rr, cc = rr + sign * dr, cc + sign * dc
+            if count >= k:
+                won = True
+                break
+        board[row][col] = "."
+        return won
+
+    winning = [col for col in open_cols if wins(col, me)]
+    forced = winning or [col for col in open_cols if wins(col, opp)]
+    if not forced:
+        return []
+    letter_mode = bool(state.get("letter_mode"))
+    tokens = state.get("col_tokens") or {}
+    actions: list[str] = []
+    for col in forced:
+        if letter_mode:
+            token = tokens.get(col) or chr(ord("A") + col)
+            actions.append(f"drop {token}")
+        else:
+            actions.append(f"drop {col}")
+    return actions
+
+
+def _think_ahead_verdict(observation: str, action: str) -> tuple[bool, bool]:
+    """(judged, agree) for a think_ahead/Connect-K decision: only forced win/block positions count."""
+    forced = _connect_forced_actions(observation)
+    if not forced:
+        return False, False
+    ours = _canonical(action)
+    return True, any(_canonical(item) == ours for item in forced)
+
+
 def _first_int(text: str) -> int | None:
     match = re.search(r"-?\d+", text or "")
     return int(match.group(0)) if match else None
@@ -582,17 +662,24 @@ def analyse_game(doc: dict, game_doc: dict, game_index: int, experts: list,
                     row["illegal"] += 1
                 if isinstance(entry.get("ms"), (int, float)):
                     ms_values.append(float(entry["ms"]))
-                reference, _solver = _reference(game_experts, spec, rules, observation,
-                                                _safe_legal(game, our_seat), our_seat, step_index, stats)
-                if reference is not None:
-                    judged, agreed = _tactic_match(spec.family, normalized or str(raw), reference)
-                    if judged:
-                        bucket = stats["families"].setdefault(spec.family, {"judged": 0, "agree": 0})
-                        bucket["judged"] += 1
-                        row["judged"] += 1
-                        if agreed:
-                            bucket["agree"] += 1
-                            row["agree"] += 1
+                judged = agreed = False
+                if spec.family == "think_ahead":
+                    # Anytime search moves depend on the time budget; judge the policy by a
+                    # deterministic immediate win/block oracle instead (blunder check).
+                    judged, agreed = _think_ahead_verdict(observation, normalized or str(raw))
+                else:
+                    reference, _solver = _reference(game_experts, spec, rules, observation,
+                                                    _safe_legal(game, our_seat), our_seat,
+                                                    step_index, stats)
+                    if reference is not None:
+                        judged, agreed = _tactic_match(spec.family, normalized or str(raw), reference)
+                if judged:
+                    bucket = stats["families"].setdefault(spec.family, {"judged": 0, "agree": 0})
+                    bucket["judged"] += 1
+                    row["judged"] += 1
+                    if agreed:
+                        bucket["agree"] += 1
+                        row["agree"] += 1
 
         for seat, other in by_seat.items():
             if seat == our_seat or not isinstance(other, dict):
@@ -771,7 +858,8 @@ def analyse(replays_dir: str | None = None, limit: int | None = None, report: di
     else:
         confidence = "low"
 
-    tactics_note = "tactics = agreement/quality vs our own expert stack, not proven optimality"
+    tactics_note = ("tactics = agreement/quality vs our own expert stack, not proven optimality; "
+                    "think_ahead judged by deterministic immediate win/block (blunder check)")
     if judged == 0:
         tactics_note += f"; {LOW_CONFIDENCE} (0 judged decisions, neutral 0.5 used)"
     elif judged < TACTICS_MIN_JUDGED:

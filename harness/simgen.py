@@ -60,6 +60,9 @@ variant label and settings. Therefore:
   by the 5x5 sample, and vice versa.
 - legal_actions must be correct for EVERY variant, and must exclude occupied/illegal cells by parsing
   the observation, not by replaying a fixed opening.
+- Grid rows may be printed as ` 1 | . . X`: strip the row label and the `|` separator before splitting
+  cells (`line.split("|", 1)[1].split()`), never keep the separator as a cell, and derive the number of
+  columns from the cells and the rows from the parsed lines.
 
 The engine constructs Model(rules, MY_SEAT), calls update(observation) once per turn, then repeatedly
 clones the model and applies actions while searching. Therefore:

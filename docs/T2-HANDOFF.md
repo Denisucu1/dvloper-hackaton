@@ -158,7 +158,10 @@ A read-only audit ranked bottlenecks beyond "the game has luck"; the top ones we
 
 - **Leduc round-1 equity** (`f71facd`): enumerate the opponent card *and* the community draw. J was
   0.10 (fold) vs a 0.25 pot-odds threshold; now 0.40 (call), K 0.70. Dominated round-2 hands still fold.
-  mini_poker over 10 seeds: 50% win / 64.3% score.
+  mini_poker over 10 seeds: 50% win / 64.3% score. A second, deeper bug was found later:
+  `_hand_value` ignored the kicker, so J+K tied with Q+K and round-2 equity for J on a K board was
+  0.375 instead of 0.125; the bot called a -EV bet. `_hand_value` now returns `(pair)` or
+  `(1, high, low)`, giving the exact table J/Q/K round 1 = 0.30/0.50/0.70 and J on K = 0.125 (fold).
 - **Null `legal_actions` last resort** (`8671e8d`): format/family-aware action (`unknown`, `offer n`,
   a five-letter word, a concrete example) in both `decide_turn` and `main.turn_fallback`; never empty.
 - **Deals offer audit** (`8671e8d`): no longer skipped when the arena enumerates offers; corrected
@@ -186,9 +189,12 @@ expectimax); the ported heuristics only fill gaps and official-text formats:
 - Deals fixes before adopting: decay inferred from the parsed initial pot (never a hardcoded 100), the
   corrected offer snaps to the nearest legal one, one-shot Prisoner's Dilemma defects, "second-highest"
   auctions are recognised.
-- `solver_grid` runs only after the generated model fails. It now understands both the lab's numeric
-  board text and the arena's own `CONNECT FOUR - 7x9, connect 5` letter-column form (`drop E` on the
-  real 7x9 start), so it is a true fallback when simgen is missing.
+- `solver_grid` is now **grid-first for Connect-K**: the prep simulator was measured to mis-parse
+  rows with a `|` separator (columns shifted by one), so the exact built-in parser plays instead and
+  the generated model remains the fallback for everything else. It understands both the lab's numeric
+  board text and the arena's `CONNECT FOUR - 7x9, connect 5` letter-column form. Measured: 3/3 vs
+  random, p95 2.24 s (was 2/3 and 4.4 s with the shifted model). The simgen prompt now says to strip
+  the row label and `|` before splitting cells; `ARTIFACT_VERSION` is 8.
 - Gateway retry on 429/5xx inside the caller's timeout; prep rejects an incomplete cache; spec retries
   with growing waits while the clock allows; `ready` subtracts the study time already spent.
 - Deals audit recomputes the split from the opponent's offer number and never leaves a rejected
@@ -198,7 +204,7 @@ expectimax); the ported heuristics only fill gaps and official-text formats:
   to the solver layer (509 proposals, 51 declines, 0 illegal, 92 ms); a `port` probe checks Deals,
   Wordle, Liar's Dice and Connect-K; the summary prints the slowest stage and `--json` carries totals.
 
-Measured after the port: **8/8 pipeline stages, 467 tests, 17 probes at 100/100, performance index
+Measured after the port: **9/9 pipeline stages, 475 tests, 17 probes at 100/100, performance index
 0.950**, solver smoke 0 illegal. Bench `tg_deals` + `tg_liars_dice_probe`, 2 seeds each: **4/4 wins**,
 0 warnings/timeouts, p95 2.38 s, **$0.00034/match** (the solver path is also the cheap path); Liar's Dice
 shows `solver bluff: 1 4` / `liar` in the warm log.
@@ -218,9 +224,12 @@ against the real rules rather than self-reported. It prints a per-round table an
 | chat | 5 | reply rate and the share of our lines within 200 characters |
 
 Current run (`bench/results/20261114-222346-port-verify`, 4 rounds, 6 decisions):
-**INTELLIGENCE 93.6/100** - legality 100, tactics 83.3, outcome 100, efficiency 94, chat 100
-(confidence: medium). It is a transparent proxy, not an IQ test: tactics is agreement with our own
-experts and the sample is small, so `--bench` should be run to produce fresh rounds before quoting it.
+The tactics component now uses a **deterministic blunder check** for Connect-K (immediate win or
+must-block only; quiet positions are unjudged) instead of comparing against a different search budget,
+so a correct policy is not penalised for time-dependent move choice. Deals offers are compared on
+quality (within +-5 or better), discrete bluff/guess moves exactly. It is still a transparent proxy,
+not an IQ test: tactics measures agreement with our own experts, and outcome depends on the seed set,
+so `--bench` should produce fresh rounds before quoting the number.
 
 ## Known limits / next
 
@@ -235,7 +244,7 @@ experts and the sample is small, so `--bench` should be run to produce fresh rou
 ## Integration order for the main line
 
 1. Merge the branch (no conflicts expected: new files + small edits in prep/engine/chatpolicy/decide).
-2. `python3 -m unittest discover -s tests` (467) and `python3 scripts/report.py` (100/100, 17 probes).
+2. `python3 -m unittest discover -s tests` (475) and `python3 scripts/report.py` (100/100, 17 probes).
 3. `scripts/bench.py --label t2-merged --games tic_tac_toe,tg_connect4,tg_blotto_probe,tg_chess,pig`.
 4. Enable `HARNESS_TOURNAMENT=1` in the Dockerfile only if the bench gate stays green and prep worst case
    stays under ~420 s.
