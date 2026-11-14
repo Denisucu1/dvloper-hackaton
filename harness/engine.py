@@ -49,6 +49,8 @@ def _solvers() -> list:
         ("solver_guess", "GuessingSolver"),
         ("solver_pig", "PigSolver"),
         ("solver_simul", "SimultaneousSolver"),
+        ("solver_leduc", "LeducSolver"),
+        ("solver_luck", "LuckSolver"),
         ("solver_bluff", "BluffSolver"),
     ):
         try:
