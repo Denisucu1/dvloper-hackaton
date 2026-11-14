@@ -123,16 +123,18 @@ class BluffSolver:
 
         facing_bet = bool(current) and current[-1] == "bet"
         if facing_bet:
-            # Call with a real edge, or when the opponent's betting looks loose; fold the bottom of the deck.
-            threshold = 0.25 - 0.10 * aggressive
-            if equity >= threshold or (my_card >= n_cards - 0 and equity > 0.2):
+            # Pot odds alone say 25%, but a bettor's range is stronger than average, so the call needs a
+            # real edge: fold the bottom third instead of break-even hero calls. Loose bettors loosen it.
+            threshold = max(0.25, 0.33 - 0.08 * aggressive)
+            if equity >= threshold:
                 return "call"
             return "fold"
 
-        # No bet in front of us. Bet for value, or bluff when the opponent folds often.
-        if equity >= 0.68 or aggressive > 0.75 and equity >= 0.5:
+        # No bet in front of us. Bet for value (thin on small decks), or bluff when they fold a lot.
+        value_edge = 0.5 if n_cards <= 4 else 0.62
+        if equity >= value_edge or (aggressive > 0.75 and equity >= 0.5):
             return "bet"
-        bluff_spot = fold_rate >= 0.5 and equity < 0.45 and (turn + seat) % 3 == 0
+        bluff_spot = fold_rate >= 0.45 and equity < 0.4 and (turn + seat) % 3 == 0
         if bluff_spot:
             return "bet"
         return "check"

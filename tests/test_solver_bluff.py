@@ -70,6 +70,21 @@ class BluffSolverTests(unittest.TestCase):
         # at least never fold or return an illegal action.
         self.assertIn(action, ["check", "bet"])
 
+    def test_folds_the_bottom_third_of_a_big_deck_to_a_bet(self):
+        # 9 cards: card 3 has equity 2/8 = 0.25, exactly break-even, and a bettor's range is stronger.
+        action = self.solver.propose(
+            observation=observation(card=3, cards=9, current="opponent bet"),
+            legal=["call", "fold"], seat=1,
+        )
+        self.assertEqual(action, "fold")
+
+    def test_calls_the_top_half_of_a_big_deck_to_a_bet(self):
+        action = self.solver.propose(
+            observation=observation(card=6, cards=9, current="opponent bet"),
+            legal=["call", "fold"], seat=1,
+        )
+        self.assertEqual(action, "call")
+
     def test_unreadable_observation_returns_none(self):
         self.assertIsNone(self.solver.propose(observation="no cards here", legal=["check"], seat=0))
 
