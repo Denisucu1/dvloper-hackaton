@@ -44,8 +44,10 @@ class _Deadline(Exception):
 
 
 class Searcher:
-    def __init__(self, model: Any, seat: int, seconds: float = 0.8, max_depth: int = 8) -> None:
+    def __init__(self, model: Any, seat: int, seconds: float = 0.8, max_depth: int = 8,
+                 root_actions: list[str] | None = None) -> None:
         self.root = model
+        self.root_actions = [str(a) for a in root_actions] if root_actions else None
         self.seat = seat
         self.seconds = max(0.05, float(seconds))
         self.max_depth = max(1, int(max_depth))
@@ -58,7 +60,7 @@ class Searcher:
     # ------------------------------------------------------------------ public
     def best(self) -> tuple[str | None, float]:
         try:
-            moves = self._moves(self.root)
+            moves = list(self.root_actions) if self.root_actions else self._moves(self.root)
         except Exception:  # noqa: BLE001
             return None, DRAW
         if not moves:
@@ -250,7 +252,7 @@ class Mcts:
         seconds: float = 1.0,
         exploration: float = 0.9,
         max_iters: int = 4000,
-        rollout_plies: int = 40,
+        rollout_plies: int = 10,
         seed: int = 12345,
         max_branch: int = 200,
     ) -> None:
@@ -263,6 +265,9 @@ class Mcts:
         self.max_iters = max(1, int(max_iters))
         self.rollout_plies = max(4, int(rollout_plies))
         self.max_branch = max(2, int(max_branch))
+        # Root priors from evaluate()/tactics; they break ties that random rollouts cannot resolve
+        # (e.g. centre vs corner on an empty board).
+        self._priors: dict[str, float] = {}
         self.rng = random.Random(seed)
 
     # ------------------------------------------------------------------ public
@@ -280,6 +285,13 @@ class Mcts:
         self._expand(root, root=True)
         if not root.children:
             return None, DRAW
+
+        actions = [action for action, _ in root.children]
+        tactical = self._tactical_values(self.model, self.seat, actions)
+        immediate = [action for action in actions if tactical.get(action, 0.0) >= 1.0 - 1e-9]
+        if immediate:
+            return immediate[0], 1.0
+        self._seed_priors(root.children, tactical)
 
         deadline = time.monotonic() + self.seconds
         iterations = 0
@@ -300,19 +312,29 @@ class Mcts:
                 item.visits += 1
                 item.total += reward
 
-        # Choose by estimated value, not by visit count: with a wide, flat game the mean is the better
-        # estimator and a visit tie-break just returns whichever arm the exploration bonus favoured.
-        action, child = max(
-            root.children,
-            key=lambda item: (item[1].total / max(1, item[1].visits), item[1].visits),
-        )
+        # Value first, then the root prior (tactics/evaluate) for ties that random play cannot separate.
+        action, child = self._rank(root.children)
         return action, _clip(child.total / max(1, child.visits))
 
     def _best_joint(self, movers: list[int]) -> tuple[str | None, float]:
         ours = _safe_actions(self.model, self.seat)[: self.max_branch]
         if not ours:
             return None, DRAW
-        stats = {action: [0, 0.0] for action in ours}  # action -> [visits, total from our seat]
+        # Seed every arm with a one-ply evaluation of our move (no opponent yet), so the joint search
+        # starts from the model's heuristic instead of uniform noise.
+        stats: dict[str, list[float]] = {}
+        priors: dict[str, float] = {}
+        for action in ours:
+            state = self._joint_state(action, [self.seat])
+            if state is not None and _safe_terminal(state):
+                prior = _score(state, self.seat)
+            elif state is not None:
+                prior = _heuristic(state, self.seat)
+            else:
+                prior = DRAW
+            prior = _clip(prior)
+            priors[action] = prior
+            stats[action] = [1, prior]
         deadline = time.monotonic() + self.seconds
         iterations = 0
         log_every = 0
@@ -333,8 +355,11 @@ class Mcts:
             reward = _score(state, self.seat) if _safe_terminal(state) else self._rollout_state(state)
             stats[arm][0] += 1
             stats[arm][1] += reward
-        action = max(ours, key=lambda candidate: (stats[candidate][1] / max(1, stats[candidate][0]),
-                                                  stats[candidate][0]))
+        def score(candidate: str) -> float:
+            mean = stats[candidate][1] / max(1, stats[candidate][0])
+            return mean + 0.15 * priors.get(candidate, DRAW)
+
+        action = max(ours, key=score)
         return action, _clip(stats[action][1] / max(1, stats[action][0]))
 
     def _joint_state(self, action: str, movers: list[int]) -> Any | None:
@@ -358,6 +383,55 @@ class Mcts:
             return rollout_value(state, self.seat, self.rollout_plies, self.rng)
         except Exception:  # noqa: BLE001
             return DRAW
+
+    # ------------------------------------------------------------------ tactics
+    def _tactical_values(self, model: Any, seat: int, actions: list[str]) -> dict[str, float]:
+        """One ply of exact tactics before any rollout.
+
+        1. a move that ends the game with a win is returned immediately;
+        2. a move after which the opponent has an immediate terminal win is worth 0 (never volunteer);
+        3. every other move is scored by the model's evaluate(), so the tree starts informed instead of
+           averaging random playouts (the reason a corner used to beat the centre on an empty board).
+        """
+        values: dict[str, float] = {}
+        for action in actions:
+            child = self._child(model, [(seat, action)])
+            if child is None:
+                continue
+            if child.terminal:
+                values[action] = _score(child.model, seat)
+                continue
+            movers = _safe_movers(child.model)
+            if len(movers) == 1 and movers[0] != seat:
+                loses_now = False
+                for reply in _safe_actions(child.model, movers[0])[: self.max_branch]:
+                    grand = self._child(child.model, [(movers[0], reply)])
+                    if grand is not None and grand.terminal and _score(grand.model, seat) <= 0.0:
+                        loses_now = True
+                        break
+                if loses_now:
+                    values[action] = 0.0
+                    continue
+            values[action] = _heuristic(child.model, seat)
+        return values
+
+    def _seed_priors(self, children: list[tuple[str, _MctsNode]], values: dict[str, float]) -> None:
+        for action, child in children:
+            prior = values.get(action)
+            if prior is None:
+                continue
+            prior = _clip(float(prior))
+            self._priors[action] = prior
+            child.visits = 1
+            child.total = prior
+
+    def _rank(self, children: list[tuple[str, _MctsNode]]) -> tuple[str, _MctsNode]:
+        def score(item: tuple[str, _MctsNode]) -> float:
+            action, child = item
+            mean = child.total / max(1, child.visits)
+            return mean + 0.15 * self._priors.get(action, 0.5)
+
+        return max(children, key=score)
 
     # ------------------------------------------------------------------ tree
     def _select(self, node: _MctsNode) -> _MctsNode:
@@ -441,6 +515,45 @@ class Mcts:
             return DRAW
 
 
+def tactical_root(model: Any, seat: int, actions: list[str], branch: int = 200) -> tuple[str | None, list[str]]:
+    """Exact one ply before any search: take a win, never volunteer a move the opponent answers with a win.
+
+    Returns (winning_action or None, the actions that do not lose immediately). This is what stops a wide
+    game from walking into an open K-1 line while a random rollout is still exploring.
+    """
+    safe: list[str] = []
+    for action in actions[:branch]:
+        try:
+            child = model.clone()
+            child.apply(seat, action)
+        except Exception:  # noqa: BLE001
+            continue
+        if _safe_terminal(child):
+            value = _score(child, seat)
+            if value >= 1.0 - 1e-9:
+                return action, [action]
+            if value <= 1e-9:
+                continue
+            safe.append(action)
+            continue
+        movers = _safe_movers(child)
+        if len(movers) == 1 and movers[0] != seat:
+            loses = False
+            for reply in _safe_actions(child, movers[0])[:branch]:
+                try:
+                    grand = child.clone()
+                    grand.apply(movers[0], reply)
+                except Exception:  # noqa: BLE001
+                    continue
+                if _safe_terminal(grand) and _score(grand, seat) <= 1e-9:
+                    loses = True
+                    break
+            if loses:
+                continue
+        safe.append(action)
+    return None, safe or list(actions[:branch])
+
+
 def route_for(model: Any, seat: int) -> str:
     """Which searcher will run, and why. Exposed so logs and tests can prove the routing."""
     if model is None:
@@ -453,8 +566,6 @@ def route_for(model: Any, seat: int) -> str:
         return "no-actions"
     if len(movers) > 1:
         return "mcts-joint"
-    if len(actions) > WIDE_ACTIONS:
-        return "mcts"
     return "alphabeta"
 
 
@@ -469,11 +580,17 @@ def best_action_meta(model: Any, seat: int, seconds: float = 0.8, max_depth: int
         meta["route"] = route
         if route in ("not-my-turn", "no-actions"):
             return meta
-        if route in ("mcts", "mcts-joint"):
+        if route == "mcts-joint":
             action, value = Mcts(model, seat, seconds=min(3.0, max(0.2, float(seconds)))).best()
             meta.update(action=action, value=value)
             return meta
-        searcher = Searcher(model, seat, seconds, max_depth)
+        actions = _safe_actions(model, seat)
+        win, safe = tactical_root(model, seat, actions)
+        if win is not None:
+            meta.update(action=win, value=1.0, route="alphabeta+tactical", depth=1)
+            return meta
+        meta["route"] = "alphabeta"
+        searcher = Searcher(model, seat, seconds, max_depth, root_actions=safe)
         action, value = searcher.best()
         meta.update(action=action, value=value, depth=searcher.depth_reached)
         return meta

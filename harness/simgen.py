@@ -37,6 +37,7 @@ _CONTRACT = '''class Model:
     def to_move(self) -> list[int]: ...              # seats that must move now
     def score(self, seat: int) -> float: ...         # terminal: 1 win, 0.5 draw, 0 loss
     def evaluate(self, seat: int) -> float: ...      # non-terminal heuristic, 0.5 neutral
+    def move_score(self, action: str) -> float: ...  # optional: higher = try first
     def clone(self) -> "Model": ...                  # deep enough copy; search mutates clones
     def key(self) -> str: ...                        # optional transposition key'''
 
@@ -70,7 +71,11 @@ clones the model and applies actions while searching. Therefore:
 - is_terminal() returns a bool. to_move() returns a list of seat ints (one seat for alternating games,
   two for simultaneous games, [] when the game is over).
 - score(seat) is only called at terminal states: 1.0 win, 0.5 draw, 0.0 loss from that seat's view.
-- evaluate(seat) is any cheap heuristic in [0, 1] (0.5 neutral) used at the search horizon.
+- evaluate(seat) is a real heuristic in [0, 1] (0.5 neutral), NOT a constant: count how close each side
+  is to completing a line (e.g. open lines, stones in a row, threats). The searcher calls it at the
+  rollout horizon and as a root prior, so a constant value makes the search blind.
+- move_score(action) is optional and recommended: a higher number for moves that complete a line, block
+  the opponent's line, or build a double threat. The searcher tries those moves first.
 - key() is optional: a string that uniquely identifies the position.
 
 Rules for the code:
