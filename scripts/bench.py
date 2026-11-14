@@ -51,8 +51,11 @@ def sh(cmd: list[str], cwd: str, timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
 
-def practice_games() -> list[str]:
-    out = sh([sys.executable, "-m", "arena", "practice", "--list"], ARENA, 60)
+def practice_games(games_dir: str = "practice") -> list[str]:
+    cmd = [sys.executable, "-m", "arena", "practice", "--list"]
+    if games_dir != "practice":
+        cmd += ["--games-dir", games_dir]
+    out = sh(cmd, ARENA, 60)
     games = []
     for line in out.stdout.splitlines():
         name = line.split()[0] if line.split() else ""
@@ -91,7 +94,7 @@ def read_env(path: str) -> dict:
 
 
 # --------------------------------------------------------------------------- one match
-def run_match(args, game: str, seed: int, opponent: str, name_b: str) -> dict:
+def run_match(args, game: str, seed: int, opponent: str, name_b: str, practice: set[str]) -> dict:
     match_id = f"bench-{slug(game)}-{seed}"
     replay = os.path.join(ARENA, "results", "practice", "matches", f"{match_id}.json")
     if os.path.exists(replay):
@@ -104,6 +107,9 @@ def run_match(args, game: str, seed: int, opponent: str, name_b: str) -> dict:
         "--id", match_id, "--name-a", "adn", "--name-b", name_b,
         "--quiet",
     ]
+    if game not in practice:
+        # Tournament/test games live in arena/<games-dir>, not in the practice package.
+        cmd += ["--games-dir", args.games_dir]
     if args.prep:
         cmd += ["--prep", "--prep-seconds", str(args.prep_seconds)]
     if os.path.exists(args.env_file):
@@ -448,7 +454,9 @@ def main() -> int:
     parser.add_argument("--bot", default=DEFAULT_BOT, help="arena-lite bot spec for our bot")
     parser.add_argument("--opponent", action="append", default=None,
                         help="opponent spec (repeatable); default: the random bot")
-    parser.add_argument("--games", default="all", help="comma list or 'all' (practice games)")
+    parser.add_argument("--games", default="all", help="comma list or 'all' (practice + test games)")
+    parser.add_argument("--games-dir", default="games",
+                        help="arena-lite package for non-practice games (default: games)")
     parser.add_argument("--seeds", type=int, default=2, help="matches per game (different deals)")
     parser.add_argument("--seed-start", type=int, default=1, help="first seed number")
     parser.add_argument("--best-of", type=int, default=3)
@@ -465,8 +473,10 @@ def main() -> int:
     if not os.path.isdir(ARENA):
         print(f"arena-lite not found at {ARENA}", file=sys.stderr)
         return 2
+    practice = practice_games()
     if args.games.strip() == "all":
-        args.games = practice_games()
+        extra = [g for g in practice_games(args.games_dir) if g not in practice]
+        args.games = practice + extra
     else:
         args.games = [item.strip() for item in args.games.split(",") if item.strip()]
     if not args.games:
@@ -498,7 +508,7 @@ def main() -> int:
             for offset in range(args.seeds):
                 seed = args.seed_start + offset
                 print(f"[bench] {game} seed={seed} vs {name_b} ...", end=" ", flush=True)
-                run = run_match(args, game, seed, opponent, name_b)
+                run = run_match(args, game, seed, opponent, name_b, set(practice))
                 if run.get("setup_error"):
                     print(f"SETUP ERROR: {run['setup_error'][:120]}")
                     rows.append({"game": game, "seed": seed, "match_id": run["match_id"],

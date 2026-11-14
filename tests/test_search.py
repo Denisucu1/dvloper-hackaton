@@ -354,6 +354,86 @@ class WideTacticsTests(unittest.TestCase):
         self.assertEqual(value, 1.0)
 
 
+class DeferredWin:
+    """Seat 0 has three first moves and wins only with 'c', two plies later.
+    evaluate() always returns 1.0, which used to make the root believe it had mate at depth 1."""
+
+    def __init__(self, first=None, second=False):
+        self.first = first
+        self.second = second
+
+    def update(self, observation):
+        return None
+
+    def legal_actions(self, seat):
+        if self.second:
+            return []
+        return ["a", "b", "c"] if self.first is None else ["x"]
+
+    def apply(self, seat, action):
+        if self.first is None:
+            self.first = action
+        else:
+            self.second = True
+
+    def is_terminal(self):
+        return self.second
+
+    def to_move(self):
+        if self.second:
+            return []
+        return [1] if self.first is not None else [0]
+
+    def score(self, seat):
+        if not self.second:
+            return 0.5
+        winner = 0 if self.first == "c" else 1
+        return 1.0 if seat == winner else 0.0
+
+    def evaluate(self, seat):
+        return 1.0  # the trap: a heuristic that claims to be winning
+
+    def clone(self):
+        return DeferredWin(self.first, self.second)
+
+    def key(self):
+        return f"{self.first}:{self.second}"
+
+
+class KeylessDeferredWin(DeferredWin):
+    def key(self):
+        raise AttributeError
+
+
+class SearchCorrectnessTests(unittest.TestCase):
+    def test_heuristic_saturation_does_not_fake_mate(self):
+        action, value = search.best_action(DeferredWin(), 0, seconds=1.0, max_depth=3)
+        self.assertEqual(action, "c")
+        self.assertEqual(value, 1.0)
+
+    def test_key_and_no_key_agree(self):
+        with_key, value_key = search.best_action(DeferredWin(), 0, seconds=0.5, max_depth=3)
+        without_key, value_plain = search.best_action(KeylessDeferredWin(), 0, seconds=0.5, max_depth=3)
+        self.assertEqual((with_key, value_key), (without_key, value_plain))
+
+    def test_heuristic_is_bounded_below_mate(self):
+        # evaluate() is never allowed to reach a terminal value on its own.
+        class OnlyHeuristic(DeferredWin):
+            def is_terminal(self):
+                return False
+
+            def score(self, seat):
+                return 0.5
+
+            def clone(self):
+                # keep the class: the inherited clone() would bring real terminal states back
+                return OnlyHeuristic(self.first, self.second)
+
+        action, value = search.best_action(OnlyHeuristic(), 0, seconds=0.3, max_depth=2)
+        self.assertIsNotNone(action)
+        self.assertLess(value, 1.0)
+
+
 class StandaloneLoadTests(unittest.TestCase):
     def test_search_module_loads_without_the_package(self):
         """The sandbox loads this file by path, so it must not use relative imports."""

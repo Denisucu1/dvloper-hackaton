@@ -29,14 +29,22 @@ def _score(model: Any, seat: int) -> float:
         return DRAW
 
 
+# A heuristic may never claim a terminal result: only a real terminal state is worth 0.0 or 1.0.
+# Without this, evaluate() returning 1.0 (a very common "I am winning" heuristic) made the root think it
+# had found mate at depth 1 and stop, which is how an empty 5x5 board returned a corner with value=1.00.
+HEURISTIC_FLOOR = 0.01
+HEURISTIC_CEIL = 0.99
+
+
 def _heuristic(model: Any, seat: int) -> float:
     getter = getattr(model, "evaluate", None)
     if not callable(getter):
         return DRAW
     try:
-        return _clip(float(getter(seat)))
+        value = float(getter(seat))
     except Exception:  # noqa: BLE001
         return DRAW
+    return min(HEURISTIC_CEIL, max(HEURISTIC_FLOOR, value))
 
 
 class _Deadline(Exception):
@@ -131,6 +139,7 @@ class Searcher:
             return _heuristic(model, self.seat)
 
         value = -1.0 if maximizing else 2.0
+        cutoff = False
         for action in moves:
             child = self._child(model, mover, action)
             if child is None:
@@ -145,9 +154,12 @@ class Searcher:
             else:
                 beta = min(beta, value)
             if beta <= alpha:
+                cutoff = True
                 break
         value = _clip(value)
-        if key:
+        # Never store a pruned score as if it were exact: an alpha-beta cutoff is only a bound, and
+        # caching it poisons later probes of the same position (rule: exact values only).
+        if key and not cutoff:
             self.table[key] = (value, depth)
         return value
 
