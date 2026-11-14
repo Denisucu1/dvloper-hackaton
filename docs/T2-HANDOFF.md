@@ -30,11 +30,11 @@ Baseline before this work: 253 tests. After: **343 tests** + a 14-component prob
 | `HARNESS_CFR` | append the CFR solver (Kuhn-only today) | off |
 
 `BOT_HARNESS_*` works in local arena-lite practice (`BOT_*` is the only custom namespace forwarded).
-In the arena only the image's env exists, so a flag that must be on at freeze goes in the Dockerfile:
 
-```dockerfile
-ENV HARNESS_TOURNAMENT=1
-```
+Auto mode (no env needed): the prep tournament runs by itself for `read_opponent`, `guessing` and
+`unknown` families, and is skipped for `think_ahead` (alpha-beta is already proven there), hidden
+information, bluff/deals/truth/guardrails. A non-search winner must beat search by >= 0.55 over 20 paired
+games, otherwise search is kept. Forcing every family is still possible with `HARNESS_TOURNAMENT=1`.
 
 ## Measured on the probes (real generated models)
 
