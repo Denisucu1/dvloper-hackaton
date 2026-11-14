@@ -78,8 +78,8 @@ LESSONS_KEPT = int(os.environ.get("HARNESS_LESSONS_KEPT", "9"))
 LESSONS_SHOWN = int(os.environ.get("HARNESS_LESSONS_SHOWN", "4"))
 # The strategy brief (harness/strategy.py): one prep call with a large thinking budget.
 STRATEGY = os.environ.get("HARNESS_STRATEGY", "1") == "1"
-STRATEGY_THINKING = int(os.environ.get("HARNESS_STRATEGY_THINKING", "8000"))
-STRATEGY_TIMEOUT = float(os.environ.get("HARNESS_STRATEGY_TIMEOUT", "150"))
+STRATEGY_THINKING = int(os.environ.get("HARNESS_STRATEGY_THINKING", "2000"))
+STRATEGY_TIMEOUT = float(os.environ.get("HARNESS_STRATEGY_TIMEOUT", "240"))
 STRATEGY_MIN_SECONDS = float(os.environ.get("HARNESS_STRATEGY_MIN", "40"))
 STRATEGY_CHARS = int(os.environ.get("HARNESS_STRATEGY_CHARS", "2600"))
 # Seconds of the study clock kept for the rest of `start` when the brief is built there (cold container).

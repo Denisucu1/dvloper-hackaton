@@ -271,6 +271,11 @@ OBSERVATION (the player you audit is "you"):
 The player is about to play: {action}
 
 Work out, in numbers, step by step:
+- "offer_number": if this move accepts an offer the OPPONENT made, the number in that offer, copied exactly as
+  the observation shows it (else null);
+- "offer_number_is": whose share that number is, read from the ACTION FORMAT in the rules and from the wording
+  of the observation: "proposer" when the number is what the one who made the offer keeps or receives
+  ("opponent offered to keep 80" -> proposer), "receiver" when it is what the other side gets (else null);
 - "total": what is being split or traded right now (the current pot or value), if there is one (else null);
 - "theirs": what the opponent receives if this move is played;
 - "mine": what the player receives (when a pot is split: total minus theirs);
@@ -279,7 +284,8 @@ Work out, in numbers, step by step:
 - "higher_gain_wins": true if the rules decide the game by comparing the two players' gains or surplus, else false.
 Then "verdict": "reject" if mine is below walk_away, or if higher_gain_wins and the opponent receives more than
 the player. Otherwise "ok". If you cannot work the numbers out from the rules, answer "ok".
-{{"total": <number or null>, "theirs": <number or null>, "mine": <number>, "walk_away": <number or null>,
+{{"offer_number": <number or null>, "offer_number_is": "proposer" or "receiver" or null,
+ "total": <number or null>, "theirs": <number or null>, "mine": <number>, "walk_away": <number or null>,
  "higher_gain_wins": true or false, "verdict": "ok" or "reject",
  "better_action": "<a legal move to play instead, in the exact action format, e.g. a counter-offer that leaves you ahead>"}}"""
 
@@ -330,7 +336,9 @@ def _audit(gateway: Gateway, *, rules: str, observation: str, action: str, timeo
         except (TypeError, ValueError):
             return None
 
-    facts = {key: number(key) for key in ("mine", "walk_away", "theirs", "total")}
+    facts = {key: number(key) for key in ("mine", "walk_away", "theirs", "total", "offer_number")}
+    side = str(data.get("offer_number_is") or "").strip().lower()
+    facts["offer_side"] = side if side in ("proposer", "receiver") else None
     facts["relative"] = bool(data.get("higher_gain_wins"))
     facts["verdict"] = str(data.get("verdict") or "").lower()
     facts["better"] = actions.clean(data.get("better_action"))
@@ -364,6 +372,13 @@ def audit_commitment(gateway: Gateway, *, rules: str, observation: str, action: 
     if not facts:
         return None
     total, theirs = facts["total"], facts["theirs"]
+    offer, side = facts.get("offer_number"), facts.get("offer_side")
+    if total is not None and offer is not None and side and 0 <= offer <= total:
+        # Seen in the lab: "opponent offered to keep 80" audited as mine=80, theirs=20, and a deal worth 20
+        # was accepted. The offer is the opponent's, so the split follows from its number and whose share
+        # it is; the model's own mine/theirs are not used when these two facts are present.
+        theirs = offer if side == "proposer" else total - offer
+        facts["theirs"] = theirs
     if total is not None and theirs is not None and 0 <= theirs <= total:
         facts["mine"] = total - theirs  # the subtraction is ours: the model answered 40 for "90 minus 55"
     losing = _losing(facts)

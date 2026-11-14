@@ -550,6 +550,20 @@ class DealAuditTests(unittest.TestCase):
                                  "verdict": "ok", "better_action": "offer 50"})
         self.assertEqual(decision.action, "accept")
 
+    def test_offer_read_backwards_is_recomputed_from_the_offer_itself(self):
+        # Seen in the lab: "opponent offered to keep 80" came back as mine=80, theirs=20 with verdict ok,
+        # and a deal worth 20 of 100 was accepted. The opponent's number and whose share it is decide.
+        decision, _ = self.play({"offer_number": 80, "offer_number_is": "proposer", "total": 100, "mine": 80, "theirs": 20,
+                                 "walk_away": 14, "higher_gain_wins": True, "verdict": "ok", "better_action": "offer 60"})
+        self.assertEqual(decision.action, "offer 60")
+
+    def test_offer_phrased_as_the_receivers_share(self):
+        # "opponent offers you 60": the number is what WE get. The model's mine=40 / theirs=60 is the wrong way
+        # round here too, and the offer itself says we receive 60 of 100: a good deal, accepted.
+        decision, _ = self.play({"offer_number": 60, "offer_number_is": "receiver", "total": 100, "mine": 40, "theirs": 60,
+                                 "walk_away": 14, "higher_gain_wins": True, "verdict": "ok", "better_action": "offer 70"})
+        self.assertEqual(decision.action, "accept")
+
     def test_good_deal_is_accepted(self):
         decision, _ = self.play({"mine": 55, "walk_away": 30, "theirs": 25, "verdict": "ok", "better_action": ""})
         self.assertEqual(decision.action, "accept")

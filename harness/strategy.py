@@ -13,6 +13,7 @@ simulator and the search still decide where they exist; the brief is what the mo
 from __future__ import annotations
 
 import re
+import time
 
 from . import config, memory
 from .llm import Gateway
@@ -55,17 +56,31 @@ def build(gateway: Gateway, rules_all: str, spec: Spec, timeout: float) -> str:
     """One call with a large thinking budget. Returns "" on any failure: the playbook stays as it was."""
     if not config.STRATEGY or not gateway.affordable or timeout < config.STRATEGY_MIN_SECONDS:
         return ""
-    budget = config.STRATEGY_THINKING
-    text = gateway.ask(
-        _SYSTEM,
-        _USER.format(family=spec.family or "unknown", rules=(rules_all or "")[: config.MAX_DOC_CHARS],
-                     limit=config.STRATEGY_CHARS),
-        max_tokens=budget + 3000,
-        timeout=min(timeout, config.STRATEGY_TIMEOUT),
-        temperature=0.2,
-        thinking="enabled",
-        budget_tokens=budget,
-    )
+    system = _SYSTEM
+    user = _USER.format(family=spec.family or "unknown", rules=(rules_all or "")[: config.MAX_DOC_CHARS],
+                        limit=config.STRATEGY_CHARS)
+    text = ""
+    spent = 0.0
+    # Rule 7.3: thinking can overrun its budget and leave no room for the answer (seen in the lab: 8000
+    # thinking tokens, 3000 of headroom, an empty answer). So the headroom is as large as the budget, and an
+    # empty answer steps the thinking down instead of giving up.
+    for budget in (config.STRATEGY_THINKING, 1024, 0):
+        left = min(timeout, config.STRATEGY_TIMEOUT) - spent
+        if left < config.STRATEGY_MIN_SECONDS / 2:
+            break
+        began = time.monotonic()
+        text = gateway.ask(
+            system, user,
+            max_tokens=(2 * budget + 2500) if budget else 2500,
+            timeout=left,
+            temperature=0.2,
+            thinking="enabled" if budget else "disabled",
+            budget_tokens=budget or None,
+        )
+        spent += time.monotonic() - began
+        if (text or "").strip():
+            break
+        log(f"strategy brief: empty answer with thinking budget {budget}, stepping down")
     text = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
     if len(text) < 200 or "DECISION RULES" not in text.upper():
         if text:
