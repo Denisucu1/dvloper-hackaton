@@ -19,8 +19,12 @@ def report(path: Path, bot: str) -> dict:
     doc = json.loads(path.read_text(encoding="utf-8"))
     ours = [line for line in doc.get("chat", []) if line.get("team") == bot and line.get("kind") == "chat"]
     lengths = [len(line["text"]) for line in ours] or [0]
-    log_path = path.parent.parent / "logs" / f"{path.stem}-{bot}.log"
-    log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    logs_dir = path.parent.parent / "logs"
+    # Without --prep one log per match; with --prep each specialist logs to logs/warm/<bot>--<game>.log.
+    sources = [logs_dir / f"{path.stem}-{bot}.log"]
+    sources += [logs_dir / "warm" / f"{bot}--{game.get('game_id')}.log" for game in doc.get("games", [])]
+    log = "\n".join(source.read_text(encoding="utf-8", errors="replace")
+                    for source in dict.fromkeys(sources) if source.exists())
     tactics = Counter(re.findall(r"chat_tactic=([\w-]+)", log))
     gates = Counter(re.findall(r"chat_gate=([^=]+?) read=", log))
     out = {
