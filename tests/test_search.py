@@ -127,6 +127,114 @@ class SearchTests(unittest.TestCase):
         self.assertIn(action, ["B2", "A1", "A3", "C1", "C3"])
 
 
+class WidePick:
+    """Two plies, 100 actions, the higher number wins: exactly the shape alpha-beta cannot handle."""
+
+    def __init__(self, picks=None):
+        self.picks = list(picks or [])
+
+    def update(self, observation):
+        return None
+
+    def legal_actions(self, seat):
+        return [str(i) for i in range(100)]
+
+    def apply(self, seat, action):
+        self.picks.append((seat, int(action)))
+
+    def is_terminal(self):
+        return len(self.picks) >= 2
+
+    def to_move(self):
+        return [] if self.is_terminal() else [len(self.picks)]
+
+    def score(self, seat):
+        chosen = dict(self.picks)
+        if len(chosen) < 2:
+            return 0.5
+        mine, theirs = chosen[seat], chosen[1 - seat]
+        return 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
+
+    def evaluate(self, seat):
+        return 0.5
+
+    def clone(self):
+        return WidePick(self.picks)
+
+
+class BothPick:
+    """Simultaneous: both seats pick 0..9 at once, higher wins. `to_move()` returns two seats."""
+
+    def __init__(self, picks=None):
+        self.picks = dict(picks or {})
+
+    def update(self, observation):
+        return None
+
+    def legal_actions(self, seat):
+        return [str(i) for i in range(10)]
+
+    def apply(self, seat, action):
+        self.picks[int(seat)] = int(action)
+
+    def is_terminal(self):
+        return len(self.picks) >= 2
+
+    def to_move(self):
+        return [] if self.is_terminal() else [0, 1]
+
+    def score(self, seat):
+        if len(self.picks) < 2:
+            return 0.5
+        mine, theirs = self.picks[seat], self.picks[1 - seat]
+        return 1.0 if mine > theirs else (0.5 if mine == theirs else 0.0)
+
+    def evaluate(self, seat):
+        return 0.5
+
+    def clone(self):
+        return BothPick(self.picks)
+
+
+class WideAndSimultaneousTests(unittest.TestCase):
+    def test_wide_game_uses_mcts_and_finds_the_top_move(self):
+        action, value = search.best_action(WidePick(), 0, seconds=0.8)
+        self.assertIsNotNone(action)
+        self.assertGreaterEqual(int(action), 90)
+        self.assertGreaterEqual(value, 0.5)
+
+    def test_simultaneous_game_returns_a_legal_move(self):
+        model = BothPick()
+        action, value = search.best_action(model, 0, seconds=0.5)
+        self.assertIn(action, model.legal_actions(0))
+        self.assertTrue(0.0 <= value <= 1.0)
+        # Against a uniform opponent the top action dominates; MCTS must find a strong one.
+        self.assertGreaterEqual(int(action), 7)
+
+    def test_mcts_respects_the_time_budget(self):
+        started = time.monotonic()
+        search.best_action(WidePick(), 0, seconds=0.2)
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_mcts_is_deterministic_for_a_fixed_seed(self):
+        first = search.best_action(WidePick(), 0, seconds=0.4)[0]
+        second = search.best_action(WidePick(), 0, seconds=0.4)[0]
+        self.assertEqual(first, second)
+
+    def test_terminal_simultaneous_state_has_no_move(self):
+        action, value = search.best_action(BothPick({0: 3, 1: 4}), 0, seconds=0.2)
+        self.assertIsNone(action)
+        self.assertEqual(value, 0.5)
+
+    def test_broken_wide_model_does_not_raise(self):
+        class Broken(WidePick):
+            def clone(self):
+                raise RuntimeError("no clone")
+
+        action, _ = search.best_action(Broken(), 0, seconds=0.2)
+        self.assertTrue(action is None or isinstance(action, str))
+
+
 class StandaloneLoadTests(unittest.TestCase):
     def test_search_module_loads_without_the_package(self):
         """The sandbox loads this file by path, so it must not use relative imports."""
