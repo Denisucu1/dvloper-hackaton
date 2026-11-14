@@ -94,10 +94,10 @@ run shows the delta. Current values:
 
 | model | winner | score | improvement |
 |---|---|---|---|
-| connect5 | search | 0.825 | +0.350 |
-| blotto | matrix | 1.000 | +0.350 |
+| connect5 | search | 1.000 | +0.700 |
+| blotto | matrix | 1.000 | +1.000 |
 | chance_pig | chance | 0.850 | +0.350 |
-| **index** | | **0.892** | deterministic across runs |
+| **index** | | **0.950** | deterministic across runs (0.892 before the wide-root fix) |
 
 The pipeline runs it as the `performance` stage (`--verbose` prints every iteration, including the
 per-strategy scores). Search/UCT and the solvers are seeded and iteration-capped inside self-play, so the
@@ -149,6 +149,28 @@ These results are **indicative**: they test our harness on the right shapes and 
 organizers' engines. If the official files are released, drop them in `arena-lite/arena/games/` (same ids)
 and rerun the same commands.
 
+## Post-audit fixes (T2 freeze)
+
+A read-only audit ranked bottlenecks beyond "the game has luck"; the top ones were fixed and measured:
+
+- **Leduc round-1 equity** (`f71facd`): enumerate the opponent card *and* the community draw. J was
+  0.10 (fold) vs a 0.25 pot-odds threshold; now 0.40 (call), K 0.70. Dominated round-2 hands still fold.
+  mini_poker over 10 seeds: 50% win / 64.3% score.
+- **Null `legal_actions` last resort** (`8671e8d`): format/family-aware action (`unknown`, `offer n`,
+  a five-letter word, a concrete example) in both `decide_turn` and `main.turn_fallback`; never empty.
+- **Deals offer audit** (`8671e8d`): no longer skipped when the arena enumerates offers; corrected
+  offers are normalized or snapped to the nearest legal one.
+- **Truth numeric grounding** (`8671e8d`): `2,300` == `2300`; absent number-only answers rejected.
+- **Drawn-variant rules** (`8671e8d`): `start.rules` survives `adopt`.
+- **Wide alternating boards** (`b6cafe8`): one-ply root ordering + cap 24 (`WIDE_ROOT_ACTIONS`); a
+  63-action 9x7 board reaches depth 3 instead of 2. The lab model still reaches only depth 3 at 8 s
+  because its `evaluate` costs ~0.29 ms. Real `connect_four` play after the cap: 3/3 wins, depth 6-8,
+  p95 4.27 s, gate passed.
+
+Still open after T2: the simgen skip is keyed on family rather than public randomness (blackjack is
+classified `deals` and loses its simulator), the prep tournament still self-plays under a different
+clock, every turn pays a full LLM call when a solver move is locked, and PIMC/CFR for Leduc.
+
 ## Known limits / next
 
 - Tournament self-play needs the generated `Model` to be usable from `__init__` (no observation text).
@@ -162,7 +184,7 @@ and rerun the same commands.
 ## Integration order for the main line
 
 1. Merge the branch (no conflicts expected: new files + small edits in prep/engine/chatpolicy/decide).
-2. `python3 -m unittest discover -s tests` (343) and `python3 scripts/report.py` (100/100).
+2. `python3 -m unittest discover -s tests` (421) and `python3 scripts/report.py` (100/100).
 3. `scripts/bench.py --label t2-merged --games tic_tac_toe,tg_connect4,tg_blotto_probe,tg_chess,pig`.
 4. Enable `HARNESS_TOURNAMENT=1` in the Dockerfile only if the bench gate stays green and prep worst case
    stays under ~420 s.
