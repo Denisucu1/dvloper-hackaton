@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -21,6 +22,7 @@ from . import config
 from .log import log
 
 _EMPTY = ""
+_RETRY_STATUS = {429, 500, 502, 503, 504, 529}
 
 
 class Gateway:
@@ -110,21 +112,37 @@ class Gateway:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=float(timeout)) as response:
-                payload = json.loads(response.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as exc:
-            self.failures += 1
-            detail = ""
+        # A busy gateway (429, 5xx) is usually busy for a second, not for a turn. One retry after a short
+        # wait, only when the caller's clock still has room for a real answer afterwards; the whole call,
+        # wait included, never outlives `timeout`.
+        began = time.monotonic()
+        payload = None
+        for attempt in (1, 2):
+            left = float(timeout) - (time.monotonic() - began)
+            if left <= 0.5:
+                break
             try:
-                detail = exc.read().decode("utf-8", "replace")[:200]
-            except Exception:  # noqa: BLE001 - best effort diagnostics only
-                pass
-            log(f"llm http {exc.code}: {detail}")
-            return _EMPTY
-        except Exception as exc:  # noqa: BLE001 - timeouts, proxy, DNS, bad JSON: all non-fatal
-            self.failures += 1
-            log(f"llm error: {type(exc).__name__}: {exc}")
+                with urllib.request.urlopen(request, timeout=left) as response:
+                    payload = json.loads(response.read().decode("utf-8", "replace"))
+                break
+            except urllib.error.HTTPError as exc:
+                self.failures += 1
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", "replace")[:200]
+                except Exception:  # noqa: BLE001 - best effort diagnostics only
+                    pass
+                log(f"llm http {exc.code}: {detail}")
+                left = float(timeout) - (time.monotonic() - began)
+                if attempt == 1 and exc.code in _RETRY_STATUS and left >= config.RETRY_MIN_LEFT:
+                    time.sleep(config.RETRY_WAIT)
+                    continue
+                return _EMPTY
+            except Exception as exc:  # noqa: BLE001 - timeouts, proxy, DNS, bad JSON: all non-fatal
+                self.failures += 1
+                log(f"llm error: {type(exc).__name__}: {exc}")
+                return _EMPTY
+        if payload is None:
             return _EMPTY
 
         self.calls += 1

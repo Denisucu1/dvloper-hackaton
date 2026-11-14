@@ -60,9 +60,12 @@ python3 scripts/pipeline.py --bench         # + real arena matches and the bench
 python3 scripts/pipeline.py --json out.json # machine-readable stage results
 ```
 
-Measured: **6/6 stages, 8.6 s** offline. Each stage runs even if an earlier one fails; exit 1 on any
-failure. `scripts/game_smoke.py` checks variants/rules/observation/frame/legal→normalize/random
-playout/result for every game: **31/31 variant checks pass**.
+Measured: **8/8 stages, ~25 s** offline (slowest: performance, 12 s; the summary prints it). Stages:
+compile, unit tests, probes (17), solvers (solver smoke over every arena observation), protocol, game
+API, performance lab, prep trace. Each stage runs even if an earlier one fails; exit 1 on any failure.
+`scripts/game_smoke.py` checks variants/rules/observation/frame/legal→normalize/random playout/result
+for every game: **48/48 variant checks pass**. `--json` now carries per-stage seconds, `total_seconds`
+and `slowest`.
 
 ## Games added in this lab
 
@@ -171,6 +174,35 @@ Still open after T2: the simgen skip is keyed on family rather than public rando
 classified `deals` and loses its simulator), the prep tournament still self-plays under a different
 clock, every turn pays a full LLM call when a solver move is locked, and PIMC/CFR for Leduc.
 
+## Ported from the lab branch (after the audit)
+
+The T2 lab branch added a solver stack and four robustness fixes; they are now part of this branch as
+additive files, not a merge. Our own experts stay first (CFR on Kuhn, the equity Leduc solver, chance
+expectimax); the ported heuristics only fill gaps and official-text formats:
+
+- `solver_bluff` (Liar's Dice + official Mini Poker/Kuhn text), `solver_guess` (Wordle G/Y/X feedback,
+  candidate filtering), `solver_simul` (reserve-aware Blotto), `words_en`, `solver_deals` (bargaining,
+  Prisoner's Dilemma, Vickrey/first-price) and `solver_grid` (Connect-K tactical + alpha-beta fallback).
+- Deals fixes before adopting: decay inferred from the parsed initial pot (never a hardcoded 100), the
+  corrected offer snaps to the nearest legal one, one-shot Prisoner's Dilemma defects, "second-highest"
+  auctions are recognised.
+- `solver_grid` runs only after the generated model fails. It now understands both the lab's numeric
+  board text and the arena's own `CONNECT FOUR - 7x9, connect 5` letter-column form (`drop E` on the
+  real 7x9 start), so it is a true fallback when simgen is missing.
+- Gateway retry on 429/5xx inside the caller's timeout; prep rejects an incomplete cache; spec retries
+  with growing waits while the clock allows; `ready` subtracts the study time already spent.
+- Deals audit recomputes the split from the opponent's offer number and never leaves a rejected
+  acceptance standing; when the model produces nothing, `DealsSolver` is the last resort before a
+  format fallback.
+- Pipeline: a new `solvers` stage plays one seeded playout per arena variant and feeds every observation
+  to the solver layer (509 proposals, 51 declines, 0 illegal, 92 ms); a `port` probe checks Deals,
+  Wordle, Liar's Dice and Connect-K; the summary prints the slowest stage and `--json` carries totals.
+
+Measured after the port: **8/8 pipeline stages, 457 tests, 17 probes at 100/100, performance index
+0.950**, solver smoke 0 illegal. Bench `tg_deals` + `tg_liars_dice_probe`, 2 seeds each: **4/4 wins**,
+0 warnings/timeouts, p95 2.38 s, **$0.00034/match** (the solver path is also the cheap path); Liar's Dice
+shows `solver bluff: 1 4` / `liar` in the warm log.
+
 ## Known limits / next
 
 - Tournament self-play needs the generated `Model` to be usable from `__init__` (no observation text).
@@ -184,7 +216,7 @@ clock, every turn pays a full LLM call when a solver move is locked, and PIMC/CF
 ## Integration order for the main line
 
 1. Merge the branch (no conflicts expected: new files + small edits in prep/engine/chatpolicy/decide).
-2. `python3 -m unittest discover -s tests` (421) and `python3 scripts/report.py` (100/100).
+2. `python3 -m unittest discover -s tests` (457) and `python3 scripts/report.py` (100/100, 17 probes).
 3. `scripts/bench.py --label t2-merged --games tic_tac_toe,tg_connect4,tg_blotto_probe,tg_chess,pig`.
 4. Enable `HARNESS_TOURNAMENT=1` in the Dockerfile only if the bench gate stays green and prep worst case
    stays under ~420 s.

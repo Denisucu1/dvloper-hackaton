@@ -5,8 +5,10 @@ Order at play time (first hit wins):
 2. the generated game model from prep, searched here (`search.best_action`): the "the model writes the
    simulator, code picks the move" pattern. It runs inside the sandbox subprocess, so a broken or
    adversarial module can cost one move, never the game;
-3. the generated `choose()` policy from prep (shallow, but better than nothing on unseen games);
-4. nothing - the caller asks the model, and `actions.choose_fallback` is the last line of defense.
+3. built-in Connect-K tactical + alpha-beta fallback (`solver_grid.py`) when the generated simulator is
+   unavailable or failed on a Connect-K board;
+4. the generated `choose()` policy from prep (shallow, but better than nothing on unseen games);
+5. nothing - the caller asks the model, and `actions.choose_fallback` is the last line of defense.
 
 The opponent's chat claims are passed in here too, so their words genuinely reach the decision logic
 (6.5), not just the prompt.
@@ -75,6 +77,13 @@ class Engine:
         self.rules = ""
         self._load_generated()
         self._solvers = _solvers()
+        self._grid_solver = None
+        try:
+            from .solver_grid import ConnectKSolver
+
+            self._grid_solver = ConnectKSolver()
+        except (ImportError, AttributeError) as exc:
+            log(f"solver connect_k unavailable: {type(exc).__name__}")
         if _flag("HARNESS_CFR"):
             try:
                 from .cfr import CfrSolver
@@ -131,7 +140,7 @@ class Engine:
                 self._seat_logged = True
             seat = announced
 
-        action = self._ask_solver(observation, legal_list, seat, turn, timeout)
+        action = self._ask_solver(observation, legal_list, seat, turn, timeout, avoid=avoid)
         if action:
             return action, self._intent(action, claims, source=f"{self._solver_name} solver")
 
@@ -172,6 +181,24 @@ class Engine:
             log(f"generated model fallback #{self.model_failures}: route={meta.get('route')} "
                 f"reason={meta.get('reason')}")
 
+        # Built-in Connect-K alpha-beta fallback when the generated simulator is absent or failed. It only
+        # understands the official board text, so on everything else it declines without touching the turn.
+        if self._grid_solver is not None:
+            try:
+                grid_action = self._grid_solver.propose(
+                    observation=observation,
+                    legal=legal_list,
+                    avoid=avoid,
+                    max_seconds=min(1.2, max(0.2, timeout * 0.35)),
+                )
+            except Exception as exc:  # noqa: BLE001 - a fallback must never cost a move
+                log(f"solver connect_k crashed: {type(exc).__name__}: {exc}")
+                grid_action = None
+            verified_grid = normalize(grid_action, legal_list) if grid_action else None
+            if verified_grid:
+                log(f"solver connect_k: {verified_grid}")
+                return verified_grid, self._intent(verified_grid, claims, source="connect_k solver")
+
         if self.genpolicy_path and self.generated_failures < 3:
             action = sandbox.call_choose(
                 self.genpolicy_path, observation, legal_list, seat, timeout=min(3.0, timeout)
@@ -191,7 +218,8 @@ class Engine:
         return getattr(self, "_solver_label", "family")
 
     def _ask_solver(
-        self, observation: str, legal: list[str] | None, seat: int, turn: int, timeout: float
+        self, observation: str, legal: list[str] | None, seat: int, turn: int, timeout: float,
+        *, avoid: Iterable[str] | None = None,
     ) -> str | None:
         if self.solver_failures >= 3:
             return None
@@ -206,10 +234,17 @@ class Engine:
                         self.rules,
                         has_model=bool(self.model_path and self.model_failures < 3),
                     )
-                action = solver.propose(
-                    observation=observation, legal=legal, seat=seat, turn=turn,
-                    timeout=max(0.2, min(1.0, timeout)),
-                )
+                try:
+                    action = solver.propose(
+                        observation=observation, legal=legal, seat=seat, turn=turn,
+                        timeout=max(0.2, min(1.0, timeout)), avoid=avoid,
+                    )
+                except TypeError:
+                    # Older solvers do not accept `avoid`; their call signature is otherwise the same.
+                    action = solver.propose(
+                        observation=observation, legal=legal, seat=seat, turn=turn,
+                        timeout=max(0.2, min(1.0, timeout)),
+                    )
             except Exception as exc:  # noqa: BLE001 - an expert bug must not cost a move
                 log(f"solver {getattr(solver, 'name', '?')} crashed: {type(exc).__name__}: {exc}")
                 self.solver_failures += 1

@@ -35,13 +35,23 @@ T2 fixes land.
 
 ## Measured after the fixes
 
-- Pipeline `--fast`: **7/7 stages, 421 tests, 48/48 game variants, performance index 0.950** (was 0.892).
-- `scripts/report.py`: **100.0/100**, 16 probes, 193 observations.
+- Pipeline `--fast`: **8/8 stages, 457 tests, 48/48 game variants, 17 probes, performance index 0.950** (was 0.892); new `solvers` stage: 509 proposals, 0 illegal.
+- `scripts/report.py`: **100.0/100**, 17 probes (including the new `port` checks).
 - mini_poker 10 seeds: 5 wins / 3 draws / 2 losses -> **50% win, 64.3% score**, gate passed.
 - Luck games: liar's dice, blackjack, roulette -> 3/3, p95 2229 ms, $0.00289/match, chat 1.00.
 - 63-action wide board: depth **3** at 0.6-1.5 s (lean evaluate) vs depth 2 before; lab model depth 3 at 8 s.
+- Port verification `tg_deals` + `tg_liars_dice_probe`, 2 seeds: **4/4**, p95 2.38 s, $0.00034/match, gate passed.
+- Connect-K fallback parses the real arena letter-column text and returns `drop E` on the 7x9 start.
 - `connect_four` 3 seeds after the cap: **3/3 wins**, 0 warnings, depth **6-8** in real play
   (`route=alphabeta`), p95 4.27 s, $0.0037/match, gate passed.
+
+## Ported after the audit
+
+The lab branch's solver stack (`solver_bluff`/`guess`/`simul`, `words_en`, `solver_deals`, `solver_grid`)
+and four robustness fixes (gateway retry, incomplete-cache guard, spec waits, ready clock) are now
+additive files here. Our CFR/Leduc/chance experts stay ahead; the ported heuristics fill gaps and the
+official T1 text formats. Deals fixes landed with it: parsed initial pot instead of 100, nearest-legal
+offer snapping, one-shot PD defection, hyphenated auction detection.
 
 ## Fix-first shortlist
 

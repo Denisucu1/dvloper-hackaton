@@ -198,17 +198,29 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
         model_path = directory / model_name if model_name else None
         genmodel = str(model_path) if model_path and model_path.name == model_name and model_path.exists() else None
         strategy = str(manifest.get("strategy") or "")
-        log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy),
-               genmodel=bool(genmodel), strategy=strategy or "-"))
-        return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                          genmodel=genmodel, strategy=strategy, cached=True,
-                          elapsed=time.time() - started, notes=["cached artifact reused"])
+        # A cache is reused only when it is whole. Seen in the lab: the gateway refused every call during
+        # one prep (429), prep "finished" in 0.9 s with a regex spec, no playbook and no simulator, and that
+        # empty result was then served to every later prep of the game. /memory outlives the tournament
+        # (rule 5.14), so one bad minute would have crippled the specialist for the round robin too.
+        degraded = []
+        if cached.get("source") != "prep":
+            degraded.append("spec not from the model")
+        if simgen_worthwhile(spec)[0] and not genmodel:
+            degraded.append("no simulator")
+        if not degraded or not gateway.affordable:
+            log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy),
+                   genmodel=bool(genmodel), strategy=strategy or "-"))
+            return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
+                              genmodel=genmodel, strategy=strategy, cached=True,
+                              elapsed=time.time() - started, notes=["cached artifact reused"])
+        log(kv(prep="cache incomplete, preparing again", game=game_id, missing="; ".join(degraded)))
 
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
     call_timeout = min(180.0, max(20.0, budget_seconds * 0.55))
 
     spec_user = _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id),
                                   variants=_variant_blob(variants))
+    failures_before = int(getattr(gateway, "failures", 0) or 0)
     data = gateway.ask_json(
         _SPEC_SYSTEM,
         spec_user,
@@ -231,6 +243,31 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
             )
             if data:
                 notes.append("spec from model (retry)")
+
+    # A refused gateway (429 / 5xx / timeout) is busy, not wrong: keep trying with growing waits while a
+    # third of the clock is left, so prep never finishes empty in under a second (seen in the lab: every
+    # call refused with 429, prep "done" in 0.9 s with a regex spec and no playbook). A call that came back
+    # with prose but no JSON is answered by the stricter immediate retry above and then by the fallback:
+    # waiting cannot fix a model that already spoke, so the waits need a recorded transport failure.
+    refused = int(getattr(gateway, "failures", 0) or 0) > failures_before
+    for attempt, wait in enumerate(config.PREP_SPEC_WAITS, start=1):
+        if data or not refused or not gateway.available or not gateway.affordable:
+            break
+        left = seconds - (time.time() - started)
+        if left <= max(seconds / 3.0, wait + 60.0):
+            break
+        log(kv(prep="spec call failed, waiting to try again", attempt=attempt, wait=wait, left=round(left)))
+        time.sleep(wait)
+        left = seconds - (time.time() - started)
+        # The retried call must still fit inside what is left of the prep clock.
+        call_timeout = min(call_timeout, max(1.0, left - config.SAFETY))
+        data = gateway.ask_json(
+            _SPEC_SYSTEM,
+            spec_user,
+            max_tokens=1600,
+            timeout=call_timeout,
+            temperature=0.2,
+        )
     if data:
         spec = Spec.from_dict({**data, "game_id": game_id}, fp)
         spec.source = "prep"

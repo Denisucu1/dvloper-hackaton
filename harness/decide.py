@@ -342,6 +342,33 @@ def format_fallback(spec: Spec, observation: str, legal=None, avoid=None) -> str
     return "unknown"
 
 
+def _deals_solver_action(spec: Spec, rules: str, observation: str, legal, seat: int, turn: int,
+                         avoid) -> str | None:
+    """Deals only, as a last resort: the deterministic bargaining/auction solver from a sibling module.
+
+    Lazy and optional: the module may not have landed yet, and a solver must never take the turn away
+    from the model or from the audits. Returns a legal action not in `avoid`, or None.
+    """
+    if spec.family != "deals":
+        return None
+    try:
+        from .solver_deals import DealsSolver  # optional module, developed separately
+        solver = DealsSolver()
+        try:
+            solver.configure(spec, rules)  # some solvers need the rules; an older one may not accept it
+        except Exception:  # noqa: BLE001 - configuration is an optimisation, not a requirement
+            pass
+        candidate = solver.propose(observation=observation, legal=legal, seat=seat, turn=turn, timeout=1.0)
+    except Exception as exc:  # noqa: BLE001 - missing or broken solver falls through to format_fallback
+        log("deals solver unavailable:", type(exc).__name__)
+        return None
+    action = actions.normalize(candidate, legal)
+    if not action or action in {str(item) for item in (avoid or ())}:
+        return None
+    log(f"deals solver: {action}")
+    return action
+
+
 _ALIAS_SYSTEM = "You list the other names of a subject. You answer with one JSON object and nothing else."
 _ALIAS_USER = """Subject: "{subject}"
 Return {{"aliases": [...]}} with up to 14 strings that name this exact subject in another way: its word in
@@ -395,6 +422,10 @@ OBSERVATION (the player you audit is "you"):
 The player is about to play: {action}
 
 Work out, in numbers, step by step:
+- "offer_number": if this move accepts an offer the opponent made, the number in that standing offer, copied
+  exactly as the observation shows it (else null);
+- "offer_number_is": "mine" if that number is what WE receive if the offer is accepted, "theirs" if it is what
+  the OPPONENT receives (else null);
 - "total": what is being split or traded right now (the current pot or value), if there is one (else null);
 - "theirs": what the opponent receives if this move is played;
 - "mine": what the player receives (when a pot is split: total minus theirs);
@@ -403,7 +434,8 @@ Work out, in numbers, step by step:
 - "higher_gain_wins": true if the rules decide the game by comparing the two players' gains or surplus, else false.
 Then "verdict": "reject" if mine is below walk_away, or if higher_gain_wins and the opponent receives more than
 the player. Otherwise "ok". If you cannot work the numbers out from the rules, answer "ok".
-{{"total": <number or null>, "theirs": <number or null>, "mine": <number>, "walk_away": <number or null>,
+{{"offer_number": <number or null>, "offer_number_is": "mine" or "theirs" or null,
+ "total": <number or null>, "theirs": <number or null>, "mine": <number>, "walk_away": <number or null>,
  "higher_gain_wins": true or false, "verdict": "ok" or "reject",
  "better_action": "<a legal move to play instead, in the exact action format, e.g. a counter-offer that leaves you ahead>"}}"""
 
@@ -454,12 +486,14 @@ def _audit(gateway: Gateway, *, rules: str, observation: str, action: str, timeo
         except (TypeError, ValueError):
             return None
 
-    facts = {key: number(key) for key in ("mine", "walk_away", "theirs", "total")}
+    facts = {key: number(key) for key in ("mine", "walk_away", "theirs", "total", "offer_number")}
     facts["relative"] = bool(data.get("higher_gain_wins"))
     facts["verdict"] = str(data.get("verdict") or "").lower()
     facts["better"] = actions.clean(data.get("better_action"))
     means = str(data.get("number_means") or "").strip().lower()
     facts["number_means"] = means if means in ("mine", "theirs") else None
+    offer_side = str(data.get("offer_number_is") or "").strip().lower()
+    facts["offer_side"] = offer_side if offer_side in ("mine", "theirs") else None
     return facts
 
 
@@ -488,6 +522,13 @@ def audit_commitment(gateway: Gateway, *, rules: str, observation: str, action: 
     if not facts:
         return None
     total, theirs = facts["total"], facts["theirs"]
+    offer, side = facts.get("offer_number"), facts.get("offer_side")
+    if total is not None and offer is not None and side and 0 <= offer <= total:
+        # Seen in the lab: "opponent offered to keep 80" audited as theirs=50/mine=50. The offer is the
+        # opponent's, so the split follows from its number and whose share that number is; the model's own
+        # theirs is not trusted when these two facts are present.
+        theirs = total - offer if side == "mine" else offer
+        facts["theirs"] = theirs
     if total is not None and theirs is not None and 0 <= theirs <= total:
         facts["mine"] = total - theirs  # the subtraction is ours: the model answered 40 for "90 minus 55"
     losing = _losing(facts)
@@ -803,8 +844,22 @@ def decide_turn(
                                        timeout=remaining - 1.0)
         if replacement is not None:
             fixed = actions.normalize(replacement, legal_list) if replacement else None
-            if fixed is None and legal_list:
-                fixed = next((item for item in legal_list if not _COMMIT.match(item)), None)
+            if fixed is None:
+                # The audit rejected the acceptance but the correction is not playable here. Repeat our last
+                # demand: the arena already accepted it as a legal move. A rejected acceptance must not stand.
+                demand = next((str(item) for item in reversed(list(avoid))
+                               if re.search(r"(?i)offer\s+\d+", str(item))), None)
+                fixed = actions.normalize(demand, legal_list) if demand else None
+            if fixed is None:
+                # No earlier offer of ours either: the first concrete example from the spec, never a template.
+                example = next((actions.clean(item) for item in (spec.action_examples or [])
+                                if item and "<" not in str(item) and ">" not in str(item) and actions.clean(item)), None)
+                if example and legal_list:
+                    # An example is not automatically on this turn's legal list: normalize it, or snap a
+                    # numeric offer to the nearest one that is.
+                    fixed = actions.normalize(example, legal_list) or nearest_offer(example, legal_list)
+                else:
+                    fixed = example
             if fixed:
                 log(f"audit rejected {action!r}; playing {fixed!r}")
                 action, source, candidate_chat = fixed, "audit", ""  # the old line celebrated a deal we refused
@@ -838,9 +893,14 @@ def decide_turn(
         source = "scrubbed"
 
     if action is None or action == "":
-        # No model, no usable move: a concrete action for this family, never "" or a template.
-        action = format_fallback(spec, observation, legal_list, avoid)
-        source = "fallback"
+        # No model, no usable move: Deals gets one deterministic try, then a concrete action for this
+        # family, never "" or a template. The solver is last: it never pre-empts the model or the audits.
+        action = _deals_solver_action(spec, rules, observation, legal_list, seat, turn, avoid)
+        if action:
+            source = "solver"
+        else:
+            action = format_fallback(spec, observation, legal_list, avoid)
+            source = "fallback"
     if not action or not actions.is_plausible(action, spec.action_examples, allow_unknown=spec.family == "truth"):
         log(f"implausible action {action!r}; sending anyway")
 

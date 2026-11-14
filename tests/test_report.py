@@ -65,7 +65,7 @@ class RegistryTests(unittest.TestCase):
             "solvers.family", "solvers.matrix", "solvers.chance", "solvers.cfr",
             "solvers.luck", "solvers.leduc",
             "engine.routing", "selfplay.paired", "tournament.roundrobin",
-            "bench.replay", "prep.policy", "protocol.smoke",
+            "bench.replay", "prep.policy", "protocol.smoke", "port.checks",
         ):
             self.assertIn(required, names)
 
