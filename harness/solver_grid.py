@@ -182,7 +182,7 @@ class ConnectKSolver:
     ) -> str | None:
         state = parse_connect_k(observation)
         if state is None:
-            return None
+            return self._propose_nim(observation, legal, avoid)
 
         rows: int = state["rows"]
         cols: int = state["cols"]
@@ -303,3 +303,54 @@ class ConnectKSolver:
                 best_col = c
 
         return f"drop {best_col}"
+
+    def _propose_nim(
+        self,
+        observation: str,
+        legal: Iterable[str] | None,
+        avoid: Iterable[str] | None,
+    ) -> str | None:
+        text = observation or ""
+        text_l = text.lower()
+        if not any(k in text_l for k in ("nim", "stones", "pile", "heap", "take-away", "coins remaining")):
+            return None
+
+        avoid_set = {str(a).strip().lower() for a in (avoid or ()) if a}
+        legal_list = [str(a) for a in legal] if legal else []
+
+        # Single-pile take-away: e.g. "Stones remaining: 17" with "take 1 to 3"
+        pile_m = re.search(
+            r"(?:stones|coins|objects|matches|sticks|pile|heap)\s*(?:remaining|left|size)?\s*:\s*(\d+)",
+            text,
+            re.I,
+        )
+        if pile_m:
+            s = int(pile_m.group(1))
+            max_take = 3
+            range_m = re.search(r"take\s+1\s+(?:to|-)\s+(\d+)", text, re.I)
+            if range_m:
+                max_take = int(range_m.group(1))
+            elif legal_list:
+                takes = [
+                    int(m.group(1))
+                    for item in legal_list
+                    for m in [re.search(r"^(?:take|remove)\s+(\d+)$", item.strip(), re.I)]
+                    if m
+                ]
+                if takes:
+                    max_take = max(takes)
+
+            misere = "last stone loses" in text_l or "last to take loses" in text_l or "poison" in text_l
+            target_rem = (s - 1) % (max_take + 1) if misere else s % (max_take + 1)
+            take = target_rem if 1 <= target_rem <= min(s, max_take) else 1
+            cand = f"take {take}"
+            if legal_list:
+                for item in legal_list:
+                    if item.strip().lower() in (f"take {take}", f"remove {take}", str(take)):
+                        if item.strip().lower() not in avoid_set:
+                            return item
+                return None
+            if cand not in avoid_set:
+                return cand
+
+        return None

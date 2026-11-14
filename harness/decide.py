@@ -975,7 +975,11 @@ def decide_turn(
 
     # Speech rules cover the move too (6.8): a free-text move must not carry the forbidden subject.
     if action and legal_list is None and chat_policy.forbidden_hit(action):
-        scrubbed = chat_policy.scrub(action)
+        refusal_m = re.search(r'\("(answer [^"]+)"\)', rules or "", re.I)
+        if refusal_m and not chat_policy.forbidden_hit(refusal_m.group(1)):
+            scrubbed = refusal_m.group(1)
+        else:
+            scrubbed = chat_policy.scrub(action)
         log(f"forbidden subject in move {action[:60]!r} -> {scrubbed[:60]!r}")
         action = scrubbed or (proposal if proposal and not chat_policy.forbidden_hit(proposal) else "")
         source = "scrubbed"

@@ -309,5 +309,14 @@ def enforce_format(
         mid = (low_n + high_n) // 2
         return f"guess {mid}"
 
+    # 5. Truth & Guardrails ('It is YOUR turn: "answer <text>"' or 'Answer "answer <text>"')
+    if '"answer <text>"' in obs.lower() or "'answer <text>'" in obs.lower():
+        cleaned_ans = clean(action)
+        if cleaned_ans:
+            if not cleaned_ans.lower().startswith("answer "):
+                cleaned_ans = f"answer {cleaned_ans}"
+            return cleaned_ans
+        return "answer unknown"
+
     cleaned = clean(action)
     return cleaned or None
