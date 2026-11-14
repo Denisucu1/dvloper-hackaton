@@ -136,10 +136,15 @@ class Engine:
             budget = min(3.0, max(1.0, timeout * 0.7))
             # Strategy routing inside the sandbox: the generated model never runs in our process.
             strategy, matrix_path, chance_path = "search", "", ""
-            if _flag("HARNESS_TOURNAMENT") and self.strategy_hint in ("matrix", "chance"):
-                strategy = self.strategy_hint
-                matrix_path = _sibling("solver_matrix.py") if strategy == "matrix" else ""
-                chance_path = _sibling("solver_chance.py") if strategy == "chance" else ""
+            # The manifest strategy is authoritative: prep already ran the tournament (auto mode needs no
+            # env flag). Missing modules simply fall through to alpha-beta.
+            if self.strategy_hint in ("matrix", "chance"):
+                if self.strategy_hint == "matrix" and _sibling("solver_matrix.py"):
+                    strategy = "matrix"
+                    matrix_path = _sibling("solver_matrix.py")
+                elif self.strategy_hint == "chance" and _sibling("solver_chance.py"):
+                    strategy = "chance"
+                    chance_path = _sibling("solver_chance.py")
             if strategy == "search" and _flag("HARNESS_MATRIX") and (
                     self.spec.simultaneous or self.spec.family == "read_opponent"):
                 matrix_path = _sibling("solver_matrix.py")
