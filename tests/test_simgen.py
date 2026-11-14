@@ -201,6 +201,14 @@ class SimgenTests(unittest.TestCase):
         self.assertEqual(gateway.calls, 0)
         self.assertFalse(self.path.exists())
 
+    def test_prose_before_class_model_is_stripped(self):
+        gateway = FakeGateway(["Here is your module:\n" + GOOD_MODEL])
+        result = self.build(gateway)
+
+        self.assertEqual(result, str(self.path))
+        source = Path(result).read_text(encoding="utf-8")
+        self.assertTrue(source.startswith("class Model:"))
+
 
 if __name__ == "__main__":
     unittest.main()

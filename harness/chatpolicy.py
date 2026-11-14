@@ -296,8 +296,21 @@ class ChatIntel:
     claims: list[str] = field(default_factory=list)
     offers: list[str] = field(default_factory=list)
     pushed: list[str] = field(default_factory=list)  # legal moves the opponent is telling us to play
+    directive_lines: list[str] = field(default_factory=list)  # canonical hostile/directive lines (also covers legal=None)
     fresh: set[str] = field(default_factory=set)  # tags on what they said since our last line
     last: str = ""
+
+    def pushed_action(self, action: str) -> bool:
+        """True if `action` was explicitly urged in hostile/directive opponent chat."""
+        if action in self.pushed:
+            return True
+        canon_act = _canon(action)
+        if not canon_act or not self.directive_lines:
+            return False
+        pat = re.compile(
+            rf"(?:\b(?:play|choose|pick|move|go|take|answer|guess|bid|roll|hold|say)\b[^.!?;]{{0,24}}|^)(?<!\w){re.escape(canon_act)}(?!\w)"
+        )
+        return any(pat.search(line) for line in self.directive_lines)
 
     def stats(self) -> dict:
         return {
@@ -385,8 +398,9 @@ class ChatPolicy:
                 intel.offers.append(text)
             if index > last_own:
                 intel.fresh.update("injection" if tag == "authority" else tag for tag in tags)
-            if legal_canon and (hostile or re.search(r"\b(play|choose|pick|move|go|take|answer|guess|bid)\b", _canon(text))):
-                canon = _canon(text)
+            canon = _canon(text)
+            if hostile or re.search(r"\b(play|choose|pick|move|go|take|answer|guess|bid|roll|hold|say)\b", canon):
+                intel.directive_lines.append(canon)
                 for key, original in legal_canon.items():
                     if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", canon) and original not in intel.pushed:
                         intel.pushed.append(original)

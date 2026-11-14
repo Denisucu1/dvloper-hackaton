@@ -144,7 +144,7 @@ def _strip_code(text: str) -> str:
     start = 0
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith(("import ", "from ", "#", "@", '"""', "'''")) or stripped == "class Model":
+        if stripped.startswith(("import ", "from ", "#", "@", '"""', "'''", "class Model")):
             start = index
             break
     return "\n".join(lines[start:]).strip()

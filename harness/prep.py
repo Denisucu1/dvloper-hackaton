@@ -21,17 +21,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config, memory, sandbox
-from .game_model import MODEL_SUFFIX
+from .game_model import ARTIFACT_VERSION, MODEL_SUFFIX
 from .llm import Gateway
 from .log import log, kv
 from .spec import FAMILIES, Spec, fallback_spec
 
 # Prep spends its budget in this order: understanding (always), policy (cheap), simulator (expensive).
 GENMODEL = os.environ.get("HARNESS_GENMODEL", "1") == "1"
-
-# Bump when the prep pipeline changes: /memory survives freezes and a stale generated policy
-# from a previous image must never shadow the current one (rule 4.5 is about speed, not dogma).
-ARTIFACT_VERSION = 2
 
 _SPEC_SYSTEM = """You are the preparation engine of a game-playing harness. You get the rules of one
 two-player game (every variant) and real sample turns. You have never seen this game before.

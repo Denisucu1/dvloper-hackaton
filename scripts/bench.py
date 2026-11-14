@@ -36,8 +36,8 @@ from datetime import datetime
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARENA = os.path.join(ROOT, "arena-lite")
 RESULTS = os.path.join(ROOT, "bench", "results")
-DEFAULT_BOT = "cmd:python3 ../main.py"
-DEFAULT_OPPONENT = "cmd:python3 examples/random_bot.py"
+DEFAULT_BOT = f'cmd:"{sys.executable}" ../main.py'
+DEFAULT_OPPONENT = f'cmd:"{sys.executable}" examples/random_bot.py'
 
 # A move clock of 20 s: beyond this we are one slow answer away from losing a game to a timeout.
 MOVE_WARN_MS = 12_000

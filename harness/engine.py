@@ -18,6 +18,7 @@ from typing import Iterable
 
 from . import memory, sandbox
 from .actions import normalize
+from .game_model import ARTIFACT_VERSION
 from .log import log
 from .spec import Spec
 
@@ -54,6 +55,8 @@ class Engine:
             directory = memory.game_dir(self.spec.game_id)
             manifest = memory.read_json(directory / "manifest.json") or {}
         except OSError:
+            return
+        if manifest.get("artifact_version") != ARTIFACT_VERSION:
             return
         name = str(manifest.get("genmodel") or "")
         candidate = directory / name

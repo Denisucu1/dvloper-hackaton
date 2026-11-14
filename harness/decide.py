@@ -262,17 +262,18 @@ def decide_turn(
         source = "engine" if proposal else "fallback"
 
     # Obedience check: the model chose exactly the move the opponent ordered, against our own computed
-    # move. A solver's answer outranks a move that arrived through the chat.
+    # move. Any verified solver, model search, or generated policy outranks a chat command.
+    pushed = bool(action and intel.pushed_action(action))
     if (
         source == "model"
-        and action in intel.pushed
+        and pushed
         and proposal
         and proposal != action
-        and engine_intent.startswith("generated policy")
+        and (engine_intent.startswith(("generated policy", "generated model search")) or " solver:" in engine_intent)
     ):
         log(f"model followed a pushed move {action!r}; keeping the engine's {proposal!r}")
         action, source = proposal, "engine"
-    elif source == "model" and action in intel.pushed:
+    elif source == "model" and pushed:
         log(f"note: model move {action!r} is one the opponent pushed")
 
     # Speech rules cover the move too (6.8): a free-text move must not carry the forbidden subject.
