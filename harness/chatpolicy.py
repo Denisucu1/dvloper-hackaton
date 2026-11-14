@@ -266,6 +266,35 @@ def _subject_patterns(subject: str) -> list[re.Pattern[str]]:
     return [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
 
 
+_FORBIDDEN_NAMED = [
+    # "The forbidden subject of this game is: pineapple" / "Forbidden word: moon" / "forbidden topic (...): X"
+    re.compile(r"(?i)forbidden\s+(?:subject|word|topic|term|thing|name)s?\b[^.\n:]{0,60}?(?:\bis\b|\bare\b|:)\s*:?\s*[\"'“]?([^\"'”\n.;:()]{2,40})"),
+    # never mention "pineapple" / must not say the word 'moon'
+    re.compile(r"(?i)(?:never|not|n't|cannot)\s+(?:mention|say|name|use|utter|discuss|write|reveal)\b[^\"'“\n.]{0,30}[\"'“]([^\"'”\n]{2,40})[\"'”]"),
+]
+_META_WORDS = {"forbidden", "subject", "mention", "answer", "cannot"}
+_PRONOUNS = {"it", "this", "that", "them", "anything", "something", "the", "a"}
+
+
+def _is_meta(subject: str) -> bool:
+    """'forbidden subject', 'answer I cannot say that': phrases about the rule, not the subject itself."""
+    words = re.findall(r"\w+", subject.casefold())
+    if not words or len(words) > 3 or set(words) <= _PRONOUNS:
+        return True
+    return bool(_META_WORDS & set(words))
+
+
+def extract_forbidden_subjects(text: str) -> list[str]:
+    """The forbidden subject as the rules or the observation name it. A second net under the prep spec."""
+    found: list[str] = []
+    for rx in _FORBIDDEN_NAMED:
+        for match in rx.finditer(text or ""):
+            subject = match.group(1).strip(" \t-*_")
+            if len(subject) >= 2 and not _is_meta(subject) and subject.casefold() not in {s.casefold() for s in found}:
+                found.append(subject)
+    return found[:6]
+
+
 def extract_secrets(observation: str) -> list[str]:
     """Our private values, read from the observation, so the chat gate can refuse to leak them."""
     found: list[str] = []
@@ -357,11 +386,30 @@ class ChatPolicy:
         self._last_tactic = ""
         self.last_block_reason = ""
         self.profile: dict = {}
-        self._forbidden = [
-            (str(subject).strip().lower(), _subject_patterns(str(subject)))
-            for subject in self.spec.forbidden_subjects
-            if len(str(subject).strip()) >= 2
-        ]
+        self._forbidden: list[tuple[str, list[re.Pattern[str]]]] = []
+        self._learned: set[int] = set()
+        for subject in self.spec.forbidden_subjects:
+            self._add_forbidden(str(subject))
+
+    def _add_forbidden(self, subject: str) -> None:
+        key = subject.strip().lower()
+        if len(key) < 2 or _is_meta(key) or any(key == known for known, _ in self._forbidden):
+            return
+        self._forbidden.append((key, _subject_patterns(key)))
+
+    def learn(self, *texts: str) -> None:
+        """Read the forbidden subject straight from the rules and the observation (6.8).
+
+        The prep spec normally carries it; a cold container or a spec that missed it must not cost a game.
+        """
+        for text in texts:
+            if not text or hash(text) in self._learned:
+                continue
+            self._learned.add(hash(text))
+            for subject in extract_forbidden_subjects(text):
+                if not any(subject.lower() == known for known, _ in self._forbidden):
+                    log(f"forbidden subject learned from the rules: {subject!r}")
+                self._add_forbidden(subject)
 
     # ---------------------------------------------------------------- defense: read
     @staticmethod

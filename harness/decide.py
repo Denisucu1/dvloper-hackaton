@@ -153,6 +153,26 @@ def parse_answer(text: str) -> dict | None:
     return found if found.get("action") else None
 
 
+def _fill_template(templates: list, observation: str) -> str:
+    """Last resort with no legal list and no model: turn 'guess <n>' / 'answer <text>' into a real move.
+
+    A template sent as-is is always illegal; a filled one is at least well-formed (8.1: two bad answers
+    lose the game).
+    """
+    for template in templates:
+        template = str(template or "").strip()
+        if not re.fullmatch(r"[\w .:+-]*<[^<>]{1,20}>[\w .:+-]*", template):
+            continue
+        slot = re.search(r"<([^<>]+)>", template).group(1).lower()
+        if re.fullmatch(r"n|x|k|num(ber)?|int(eger)?|amount|value|bid|price|digits?", slot):
+            span = re.search(r"from (\d+) to (\d+)", observation) or re.search(r"\b(\d+)\s*-\s*(\d+)\b", observation)
+            value = str((int(span.group(1)) + int(span.group(2))) // 2) if span else "1"
+        else:
+            value = "unknown"
+        return re.sub(r"<[^<>]+>", value, template, count=1)
+    return ""
+
+
 def _profile(chat_policy: ChatPolicy) -> str:
     line = chat_policy.profile_line()
     return f"OPPONENT MEMORY: {line}\n" if line else ""
@@ -178,7 +198,9 @@ def decide_turn(
     seat = int(msg.get("seat", 0) or 0)
     avoid = msg.get("_avoid") or []
 
-    # Defense starts in code: the opponent's words are read, tagged and handed to the engine.
+    # Defense starts in code: the speech rule is read from the rules, the opponent's words are read,
+    # tagged and handed to the engine.
+    chat_policy.learn(rules, observation)
     intel = chat_policy.analyze(chat_lines, legal_list)
     claims = chat_policy.opponent_claims(chat_lines)
 
@@ -290,7 +312,8 @@ def decide_turn(
             (str(c).strip() for c in candidates if c and "<" not in str(c) and ">" not in str(c)),
             "",
         )
-        action = concrete or ("unknown" if spec.family == "truth" else "pass")
+        action = concrete or _fill_template(candidates + [spec.action_format], observation)
+        action = action or ("unknown" if spec.family == "truth" else "pass")
         source = "fallback"
     if not action or not actions.is_plausible(action, spec.action_examples):
         log(f"implausible action {action!r}; sending anyway")
@@ -311,6 +334,7 @@ def decide_ready(
 ) -> str:
     """The chat line that goes with `ready` (rule 5.7). Always returns a non-empty line."""
     chat_lines = msg.get("chat") or []
+    chat_policy.learn(str(msg.get("rules") or ""))  # the line sent with `ready` is speech-checked too (6.8)
     intel = chat_policy.analyze(chat_lines)
     if msg.get("opponent"):
         chat_policy.profile = opponents.load(msg.get("opponent"))
