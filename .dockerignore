@@ -3,6 +3,7 @@
 .gitignore
 .dockerignore
 README.md
+docs/
 
 .env
 .env.*
