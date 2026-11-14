@@ -90,22 +90,20 @@ class DealsSolver:
         obs_turn = int(turn_m.group(1)) if turn_m else 1
         max_turns = int(turn_m.group(2)) if turn_m else 8
 
-        # Parse pot decay per turn from rules ("shrinking by 5 a turn") or infer from initial pot 100
+        # Parse pot decay per turn from rules ("shrinking by 5 a turn") or infer from initial pot 100.
+        # Do not assume a decay of 5 when the rules do not say the pot shrinks.
         decay_m = re.search(r"shrink(?:ing|s)\s+by\s+(\d+)", rules or "", re.I)
         if decay_m:
             decay = int(decay_m.group(1))
-        elif obs_turn > 1 and cur_pot < 100:
+        elif ("shrink" in (rules or "").lower() or "decay" in (rules or "").lower()) and obs_turn > 1 and cur_pot < 100:
             decay = max(0, round((100 - cur_pot) / (obs_turn - 1)))
         else:
-            decay = 5
+            decay = 0
 
         # Parse walk-away distribution range from rules e.g. "(10 to 45)"
         range_m = re.search(r"walk-away\s+value\s*\((\d+)\s+to\s+(\d+)\)", rules or "", re.I)
         low_w = int(range_m.group(1)) if range_m else 10
         high_w = int(range_m.group(2)) if range_m else 45
-        # Adverse-selection-adjusted opponent walk-away: conditional on accepting our offer,
-        # opponent's reserve tends toward the lower third of [low_w, high_w].
-        est_opp_walk = low_w + 0.24 * (high_w - low_w)
 
         offers = re.findall(
             r"(you|opponent)\s+offered\s+to\s+keep\s+(\d+)",
@@ -116,14 +114,12 @@ class DealsSolver:
         last_opp_keep = opp_offers[-1] if opp_offers else None
 
         # 1. Check whether accepting opponent's standing offer is winning right now at cur_pot
+        # Must be safe against low_w so accepting never produces a 0.0 loss instead of a 0.5 no-deal draw.
         if last_opp_keep is not None:
             my_share = cur_pot - last_opp_keep
             my_surplus = my_share - my_walk
-            opp_est_surplus = last_opp_keep - (0.5 * (low_w + high_w))
-            if my_share >= my_walk + 2 and (
-                (my_share >= last_opp_keep and my_surplus > opp_est_surplus + 3)
-                or (obs_turn >= max_turns - 1 and my_surplus >= opp_est_surplus + 6)
-            ):
+            opp_worst_surplus = last_opp_keep - low_w
+            if my_share >= my_walk + 2 and my_surplus > opp_worst_surplus:
                 act = self._fmt_deal_action("accept", legal)
                 if act:
                     return act
@@ -136,12 +132,12 @@ class DealsSolver:
 
         # 3. Compute optimal counter-offer evaluated at NEXT turn's pot (when opponent decides to accept)
         next_pot = max(1, cur_pot - decay)
-        # Minimum keep so our surplus strictly beats an accepting opponent's surplus at next_pot:
-        # K - my_walk > (next_pot - K) - est_opp_walk  <=>  2*K > next_pot + my_walk - est_opp_walk
+        # k_win must be safe against the lowest opponent walk-away in the rules (low_w):
+        # K - my_walk > (next_pot - K) - low_w  <=>  2*K > next_pot + my_walk - low_w
         # Remember: No-deal is 0.5 pts, losing a deal is 0.0 pts! Never offer below k_win.
         k_win = max(
-            my_walk + 3,
-            int(math.floor((next_pot + my_walk - est_opp_walk) / 2.0)) + 2,
+            my_walk + 2,
+            int(math.floor((next_pot + my_walk - low_w) / 2.0)) + 2,
         )
         # Maximum keep that still leaves opponent >= int(0.45 * next_pot) on next turn
         opp_min_45 = int(0.45 * next_pot)

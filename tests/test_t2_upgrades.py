@@ -314,9 +314,22 @@ Answer "drop <column>"."""
             "Turn 1 of 8. Current pot: 100 coins.\nOffers so far: none.\n"
             'It is YOUR turn: "offer <n>" with n from 0 to 100, or "walk".'
         )
-        # Turn 1 pot=100 -> next_pot=95 -> int(0.45*95)=42 -> k_45=53 (immediately accepted by trickster_bot!)
+        # Turn 1 pot=100, decay=5 -> next_pot=95, low_w=10 -> k_win=floor((95+23-10)/2)+2=56
         act = deals.propose(observation=obs, legal=None, seat=0, turn=1)
-        self.assertEqual(act, "offer 53")
+        self.assertEqual(act, "offer 56")
+
+        # Non-shrinking pot=100, walk-away=28: must not assume decay=5, and must beat low_w=10 (>= 60)
+        no_shrink_rules = (
+            "SPLIT THE POT\nYou and your opponent are splitting a pot of 100 coins.\n"
+            "Each player has a private walk-away value (10 to 45)."
+        )
+        deals.configure(spec, no_shrink_rules)
+        obs_28 = (
+            "SPLIT THE POT. You are Player 0.\nYour private walk-away value: 28\n"
+            "Turn 1 of 8. Current pot: 100 coins.\nOffers so far: none.\n"
+            'It is YOUR turn: "offer <n>" with n from 0 to 100, or "walk".'
+        )
+        self.assertEqual(deals.propose(observation=obs_28, legal=None, seat=0, turn=1), "offer 61")
 
         # Final turn 8 of 8 with unfavorable opponent offer -> walk
         obs_t8 = (
