@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from . import actions, config, memory, opponents, turnpolicy
+from . import actions, chatplan, config, lessons, memory, opponents, turnpolicy
 from .chatpolicy import ChatPolicy, verify_card_claims
 from .engine import Engine
 from .llm import Gateway, extract_json
@@ -656,6 +656,10 @@ def decide_turn(
     learn_aliases(gateway, chat_policy, timeout=min(3.0, deadline / 4))
     if chat_policy.opponent:
         chat_policy.profile = opponents.load(chat_policy.opponent)  # a check finished by another container counts too
+    if not chat_policy.game_plan and not chat_policy.plan_looked:
+        chat_policy.plan_looked = True  # one disk look per game; never a build on the move clock
+        chat_policy.game_plan = chatplan.load(spec.game_id, rules) or {}
+        chat_policy.notes = lessons.load(spec.game_id, rules, chat_policy.opponent)
     verify_claims(chat_policy, observation, chat_lines)
     chat_policy.cred_fresh = any(claim["fresh"] for claim in chat_policy.specific_claims(chat_lines))
     intel = chat_policy.analyze(chat_lines, legal_list)
@@ -699,7 +703,7 @@ def decide_turn(
                 else ""
             ),
             brief=intel.brief(),
-            profile=_profile(chat_policy) + _cred_line(chat_policy),
+            profile=_profile(chat_policy) + _cred_line(chat_policy) + chat_policy.plan_block() + lessons.block(chat_policy.notes),
             private=_never_write(chat_policy) + (
                 "PRIVATE VALUES THAT MUST NOT APPEAR IN YOUR CHAT LINE: " + ", ".join(secrets_now[:12]) + "\n"
                 if secrets_now
@@ -712,6 +716,10 @@ def decide_turn(
         # Thinking is expensive in tokens and clock: only when our code has nothing verified to offer,
         # and only for the families where reasoning beats mechanics (see harness/turnpolicy.py).
         thinking = turnpolicy.thinking_for(spec, has_code_move=proposal is not None, legal=legal_list)
+        if thinking is None and proposal is None and config.THINK_FAMILIES and spec.family in config.THINK_FAMILIES:
+            # Deals, Truth, Guardrails and unclassified games have no solver: the model decides alone, and a
+            # match spends a few cents of a 75-cent budget. Bounded thinking here costs about 0.06 cent a turn.
+            thinking = (turnpolicy.THINKING_BUDGET, f"{spec.family} without a code move")
         left = deadline - (time.monotonic() - started)  # alias lookup and claim check already spent some
         if thinking and left < 9.0:
             thinking = None  # not enough clock for a bounded thinking answer
@@ -849,6 +857,17 @@ def decide_ready(
     chat_lines = msg.get("chat") or []
     chat_policy.learn(str(msg.get("rules") or ""))  # the line sent with `ready` is speech-checked too (6.8)
     learn_aliases(gateway, chat_policy, timeout=min(6.0, deadline / 3))
+    began = time.monotonic()
+    rules_text = str(msg.get("rules") or "")
+    if not chat_policy.game_plan and rules_text:
+        # From /memory when prep (or an earlier game) wrote it; else built now if the study clock is long
+        # enough to keep a wide margin for `ready` itself (a late `ready` loses the game, 8.2).
+        chat_policy.game_plan = (chatplan.load(msg.get("game_id") or spec.game_id, rules_text)
+                                 or chatplan.prepare(gateway, msg.get("game_id") or spec.game_id, rules_text,
+                                                     timeout=deadline - config.CHATPLAN_RESERVE) or {})
+    deadline = max(2.0, deadline - (time.monotonic() - began))
+    chat_policy.notes = lessons.load(msg.get("game_id") or spec.game_id, rules_text, msg.get("opponent"))
+    chat_policy.plan_looked = True
     intel = chat_policy.analyze(chat_lines)
     if msg.get("opponent"):
         chat_policy.opponent = str(msg.get("opponent"))
@@ -898,6 +917,10 @@ def observe_end(chat_policy: ChatPolicy | None, msg: dict, game: dict) -> None:
     if final:
         verify_claims(chat_policy, final, chat_lines)  # the final observation reveals the last hand too
     file_it()
+    # No clock to answer and most of the budget unspent: read the game back and keep what it teaches.
+    chat_policy.review = lessons.review_async(
+        chat_policy.gateway, game_id=game.get("game_id"), rules=str(game.get("rules") or ""), end=msg,
+        opponent=game.get("opponent"), render_chat=chat_policy.render_history)
     gateway = chat_policy.gateway
     if config.CRED_LLM and gateway is not None and final:
         chat_policy.cred_seen = ""

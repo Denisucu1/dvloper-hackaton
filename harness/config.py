@@ -61,6 +61,21 @@ CRED_LLM = os.environ.get("HARNESS_CRED_LLM", "0") == "1"
 CRED_MAX_CHECKS = int(os.environ.get("HARNESS_CRED_CHECKS", "6"))
 CRED_EVERY = int(os.environ.get("HARNESS_CRED_EVERY", "3"))  # one check every N of our turns
 CRED_TIMEOUT = float(os.environ.get("HARNESS_CRED_TIMEOUT", "25"))
+# The per-game chat plan (harness/chatplan.py): one call with thinking, in prep or at the first start.
+CHATPLAN_THINKING = int(os.environ.get("HARNESS_CHATPLAN_THINKING", "2000"))
+CHATPLAN_TIMEOUT = float(os.environ.get("HARNESS_CHATPLAN_TIMEOUT", "45"))
+CHATPLAN_MIN_SECONDS = float(os.environ.get("HARNESS_CHATPLAN_MIN", "8"))
+# Seconds of the study clock kept for `ready` itself when the plan has to be built at `start`.
+CHATPLAN_RESERVE = float(os.environ.get("HARNESS_CHATPLAN_RESERVE", "12"))
+# Families with no solver, where the model decides the move alone: bounded thinking when the clock allows.
+# Empty string switches it off.
+THINK_FAMILIES = tuple(item for item in os.environ.get("HARNESS_THINK_FAMILIES", "deals,truth,guardrails,unknown").split(",") if item)
+# Post-game review (harness/lessons.py): one background call with thinking at `end`.
+LESSONS = os.environ.get("HARNESS_LESSONS", "1") == "1"
+LESSONS_THINKING = int(os.environ.get("HARNESS_LESSONS_THINKING", "2000"))
+LESSONS_TIMEOUT = float(os.environ.get("HARNESS_LESSONS_TIMEOUT", "45"))
+LESSONS_KEPT = int(os.environ.get("HARNESS_LESSONS_KEPT", "9"))
+LESSONS_SHOWN = int(os.environ.get("HARNESS_LESSONS_SHOWN", "4"))
 # Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
 CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
 

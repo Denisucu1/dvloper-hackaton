@@ -128,6 +128,16 @@ conclusion still missing". This is the picture for "the model writes the tool, c
 **What changed for T2**
 - Chat: card claims verified against showdowns and remembered per opponent; our own line no longer carries
   the quote marks of our chat fence (it did, once, in game 3). **[done, this branch]**
+- A chat plan per game: one call with thinking reads the rules once and writes what we must never reveal,
+  what the opponent might let slip and how the game confirms it, four tactics specific to that game, and
+  the opponent's likely tricks. Cached in `/memory` by rules hash. Measured on the real Leduc and Blotto
+  rules: 7.5 s and 8.7 s, under a tenth of a cent each. **[done, this branch]**
+- Post-game review: at `end`, off the clock and in a background thread, one call with thinking turns the
+  final observation into up to three lessons for the next game of the same game. On the T1 poker game it
+  wrote, unprompted, the two hands we lost (fold to a raise on a paired board; do not check-call a bettor
+  down with one high card). **[done, this branch]**
+- Bounded thinking on the move for the families with no solver (Deals, Truth, Guardrails, unclassified).
+  **[done, this branch]**
 - Bluff: solver coverage for Kuhn and Leduc. **[owner: Denis]**
 - Read the opponent: reserve-aware Blotto, mixing instead of repeating. **[owner: Denis]**
 - Guessing: Wordle with a dictionary and entropy. **[owner: Denis]**

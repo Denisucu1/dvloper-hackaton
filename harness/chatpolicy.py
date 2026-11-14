@@ -467,6 +467,10 @@ class ChatPolicy:
         self.cred_fresh = False  # they made a specific claim since our last line
         self.claim_when: dict[str, str] = {}  # claim text -> where the game stood when it was said
         self.opponent = ""
+        self.plan_looked = False
+        self.notes: list[str] = []  # lessons from earlier games of this game (harness/lessons.py)
+        self.review = None  # the post-game review thread of the last finished game
+        self.game_plan: dict = {}  # the chat plan written for this game's rules (harness/chatplan.py)
         self.gateway = None
         self.aliases_asked: set[str] = set()  # subjects whose other names were already looked up
         for subject in self.spec.forbidden_subjects:
@@ -661,10 +665,31 @@ class ChatPolicy:
             choice = _INJECT
         else:
             pool = _TACTICS.get(self.spec.family) or _TACTICS["unknown"]
+            # Tactics written for this very game (harness/chatplan.py) come first: two lines out of three.
+            mine = [(item["name"], item["line"]) for item in (self.game_plan.get("tactics") or [])
+                    if not self.forbidden_hit(item["line"])]
+            if mine and self.rng.random() < 0.67:
+                pool = mine
             fresh = [item for item in pool if item[0] != self._last_tactic] or pool
             choice = self.rng.choice(fresh)
         self._last_tactic = choice[0]
         return choice
+
+    def plan_block(self) -> str:
+        """The game-specific chat notes for the prompt (harness/chatplan.py). Empty when there is no plan."""
+        plan = self.game_plan or {}
+        parts = []
+        if plan.get("private"):
+            parts.append("Never reveal: " + "; ".join(plan["private"]))
+        if plan.get("their_tells"):
+            parts.append("Listen for: " + "; ".join(plan["their_tells"]))
+        if plan.get("traps"):
+            parts.append("Their likely tricks: " + "; ".join(plan["traps"]))
+        if plan.get("never_do"):
+            parts.append("Never do: " + "; ".join(plan["never_do"]))
+        if not parts:
+            return ""
+        return "CHAT NOTES FOR THIS GAME (written by your harness from the rules):\n- " + "\n- ".join(parts)[:1500] + "\n"
 
     def intent_hint(self, action: str, intent: str) -> str:
         """What the line should be consistent with (6.4). Kept concrete and free of private state."""

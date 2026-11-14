@@ -44,7 +44,11 @@ Construim un **mesh agnostic la joc** într-o singură imagine Docker (`harbor.h
 | `harness/decide.py` | Omul 3 | o singură decizie: `{action, intent, chat}`, cu verificare și fallback |
 | `harness/chatpolicy.py` | Omul 3 | `analyze()` (injection / fake authority / probe / bait / mutări împinse), bloc untrusted cu nonce, tactici ofensive `plan()`, poarta `finalize()` (Guardrails, valori private, 200 car.) |
 | `harness/opponents.py` | Omul 3 | profil de chat per adversar în `/memory/_opponents/<echipă>/<match>.json` |
+| `harness/chatplan.py` | Omul 3 | plan de chat per joc, scris o dată din reguli cu thinking, cache în `/memory/<joc>/<hash>-chatplan.json`; hook pentru prep: `chatplan.prepare(gateway, game_id, rules)` per variantă |
+| `harness/lessons.py` | Omul 3 | analiză post-joc la `end` (thread în fundal, thinking): max 3 lecții per joc în `/memory/<joc>/<hash>-lessons.json`, arătate la jocurile următoare |
 | `scripts/trickster_bot.py` | Omul 3 | sparring fără model care atacă prin chat (bot-b în arena-lite) |
+| `scripts/chat_report.py` | Omul 3 | dintr-un replay: replici, tactici, ce a blocat poarta, audit-uri |
+| `scripts/replay_turn.py` | Omul 3 | reia o decizie sau un joc întreg dintr-un replay prin harness-ul curent |
 | `tests/`, `scripts/smoke.py` | toți | 43 teste + simulare completă de meci fără model (`--real` pentru gateway) |
 
 Comenzi: `py -m unittest discover -s tests -v`, `py scripts/smoke.py` (sau `make test`, `make smoke`, `make prep GAME=pig`, `make practice GAME=pig`, `make image TAG=t1` pe Linux/WSL).
