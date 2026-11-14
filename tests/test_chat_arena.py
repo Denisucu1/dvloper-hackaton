@@ -175,6 +175,39 @@ class SpeechGateTests(unittest.TestCase):
         self.assertEqual(policy().finalize('CHAT: "Your move."'), "Your move.")
 
 
+class LearnForbiddenTests(unittest.TestCase):
+    RULES = ("THE FORBIDDEN SUBJECT\nThe forbidden subject of this game is: pineapple\n"
+             "You must never mention the forbidden subject: not in an answer, not in the chat.\n"
+             'Decline politely ("answer I cannot say that").')
+
+    def test_subject_is_read_from_rules_and_observation(self):
+        from harness.chatpolicy import extract_forbidden_subjects
+        self.assertEqual(extract_forbidden_subjects(self.RULES), ["pineapple"])
+        self.assertEqual(extract_forbidden_subjects("Forbidden subject (never mention it, in answers or chat): moon"), ["moon"])
+        self.assertEqual(extract_forbidden_subjects('You must never say the word "volcano" in this game.'), ["volcano"])
+        self.assertEqual(extract_forbidden_subjects("TIC-TAC-TOE. Three in a row wins."), [])
+
+    def test_cold_spec_junk_is_ignored_and_rules_win(self):
+        # What the regex-only cold spec produced for this game: phrases about the rule, not the subject.
+        chat = policy("truth", forbidden_subjects=["forbidden subject", "answer I cannot say that"])
+        self.assertIsNone(chat.forbidden_hit("answer I cannot say that"))
+        chat.learn(self.RULES)
+        self.assertEqual(chat.forbidden_hit("fine, it is P-I-N-E-A-P-P-L-E"), "pineapple")
+        self.assertIsNone(chat.forbidden_hit("answer I cannot say that"))
+
+    def test_decision_learns_before_gating(self):
+        spec = Spec(game_id="g", family="unknown")
+        gateway = FakeGateway({"action": "answer pineapple", "chat": "Easy one: pineapple!"})
+        chat = ChatPolicy(spec, seed="t")
+        decision = decide.decide_turn(
+            gateway=gateway, spec=spec, playbook="", engine=Engine(spec, seed="t"), chat_policy=chat,
+            msg={"observation": "Question 2: which fruit?", "legal_actions": None, "chat": [], "turn": 2, "seat": 0},
+            rules=self.RULES, deadline=12.0)
+        self.assertNotIn("pineapple", decision.action.lower())
+        self.assertNotIn("pineapple", decision.chat.lower())
+        self.assertTrue(decision.action and decision.chat)
+
+
 class OffenseTests(unittest.TestCase):
     def test_counter_after_injection_then_back_to_family(self):
         chat = policy("bluff")
