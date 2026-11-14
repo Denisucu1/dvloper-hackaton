@@ -137,7 +137,6 @@ def main() -> int:
 
     # stderr goes to a file, not a pipe: nobody drains a pipe while the script waits for replies, and a
     # bot that logs more than the pipe buffer holds would block on its own log line and never exit.
-    import tempfile
     err_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
         [sys.executable, "-u", os.path.join(ROOT, "main.py")],
