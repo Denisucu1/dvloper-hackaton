@@ -8,8 +8,10 @@ Every item has an environment switch, so each can be taken or left at the merge 
 | Strategy brief written in prep with thinking | `harness/strategy.py`, `harness/prep.py` | `HARNESS_STRATEGY=1` | prep (about 90 s of 600) | about $0.009 per game |
 | Strategy brief at a cold start, cached by rules hash | `harness/strategy.py`, `harness/decide.py` | same | study clock, only when 40 s are spare after a 35 s reserve | same, once |
 | Chat plan for every variant in prep | `harness/prep.py` | `HARNESS_CHATPLAN_*` | prep (about 8 s per variant) | under $0.001 each |
-| Voting: 3 answers in parallel when no code move exists | `harness/decide.py` | `HARNESS_VOTERS=3` (1 = off) | none extra (parallel) | 3x the turn call on those turns |
-| Thinking on the move for deals, truth, guardrails, unknown | `harness/decide.py` | `HARNESS_THINK_FAMILIES` | 3-6 s on those turns | about $0.0006 a turn |
+| Level 2 council: 3 chat-blind strategists vote when no code move exists; the chat-aware call writes the line for that move; an arbiter in code keeps the council's move unless a verified claim justifies leaving it | `harness/council.py`, `harness/decide.py` | `HARNESS_VOTERS=3` (1 = off) | the council's call (capped at 8 s), then one short call | 3 small calls + 1 on those turns |
+| Thinking for the council when at least 12 s are left on the move clock (the final call never thinks once the council has a move) | `harness/decide.py` | `HARNESS_COUNCIL_THINK` | 3-6 s on those turns | about $0.0006 a voice |
+| Deals audits (accept / offer / bid) cover every model-chosen move: model, council and the chat-isolated strategist | `harness/decide.py` | - | - | - |
+| One retry on a busy gateway (429 / 5xx) inside the call's own timeout | `harness/llm.py` | `HARNESS_RETRY_*` | at most 1.2 s, only with 4 s left | - |
 | Post-game lessons | `harness/lessons.py` | `HARNESS_LESSONS=1` | none (background thread at `end`) | about $0.0005 a game |
 | Acceptance audit recomputes the split from the offer itself | `harness/decide.py` | - | - | - |
 | `ready` sized on the study clock that is left | `main.py` | - | - | - |

@@ -35,6 +35,20 @@ turn ─▶ code reads the chat  ─▶ code proposes a move ─▶ ONE model ca
                                               Deals audit, coherence of move and line ─▶ stdout
 ```
 
+Three levels on a turn, in this order:
+
+1. **Code** (0 tokens, under 100 ms): family solvers, and search on the simulator written in prep.
+2. **Council** (only when level 1 has no move): three strategists who see the rules, the strategy brief and
+   the observation but not one word of the opponent's chat vote on the move. What the chat is worth reaches
+   them as numbers computed by our code (claims verified true or false, lines that were orders).
+3. **Arbiter** (code): the chat-aware call writes the chat line for the council's move and may leave that
+   move only when our code has verified the opponent's claims as reliable; then legality, the format guard,
+   the speech gate and the Deals audit have the last word.
+
+The organizers' own test harnesses scored 5.5 / 28 for one call per move, 15 / 28 for several voices voting
+and 21.5 / 28 for a simulator plus code: levels 2 and 1 here. Prep spend is not counted in the cost score
+(rule 9.3), so the strategy brief, the chat plans and the generated code are free.
+
 Sentence to say out loud: *the model never has the last word on a move, and the opponent never has a word
 the model takes as an instruction.*
 
