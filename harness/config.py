@@ -89,6 +89,10 @@ MAX_PLAYBOOK_CHARS = int(os.environ.get("HARNESS_MAX_PLAYBOOK", "4200"))
 # the move most of them agree on is played. 1 switches voting off.
 VOTERS = int(os.environ.get("HARNESS_VOTERS", "3"))
 VOTE_MIN_SECONDS = float(os.environ.get("HARNESS_VOTE_MIN", "8"))
+# One retry on a busy gateway (429 / 5xx): how long to wait, and how much of the call's own timeout must
+# still be left for the retry to be worth making.
+RETRY_WAIT = float(os.environ.get("HARNESS_RETRY_WAIT", "1.2"))
+RETRY_MIN_LEFT = float(os.environ.get("HARNESS_RETRY_MIN_LEFT", "4.0"))
 # Chat offense: every 4th line may be aimed at the opponent's model (rule 6.7 allows it). 0 switches it off.
 CHAT_INJECT = os.environ.get("HARNESS_CHAT_INJECT", "1") == "1"
 
