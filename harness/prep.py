@@ -506,11 +506,16 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
         return candidate_module.Candidate(kind="strategy", name=name, path=None,
                                           meta={"strategy": name})
 
+    errors = [0]
+
     def play(a, b, game_seed: int) -> float:
         result = selfplay.play_game(model_path, rules,
                                     (a.meta["strategy"], b.meta["strategy"]),
-                                    seed=game_seed, max_plies=120, seconds_per_move=0.08)
-        if result.error or result.winner is None:
+                                    seed=game_seed, max_plies=80, seconds_per_move=0.03)
+        if result.error:
+            errors[0] += 1
+            return 0.5
+        if result.winner is None:
             return 0.5
         return 1.0 if result.winner == 0 else 0.0
 
@@ -521,9 +526,14 @@ def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
             play=play,
             budget_s=min(150.0, budget),
             seed=seed,
+            games_per_pair=2,
         )
     except Exception as exc:  # noqa: BLE001 - prep must never die for an experiment
         notes.append(f"tournament skipped: {type(exc).__name__}")
+        return ""
+    total = max(1, int(stats.get("games") or 0))
+    if errors[0] * 2 >= total:
+        notes.append(f"tournament skipped: model does not self-play ({errors[0]}/{total} errors)")
         return ""
     winner = str(best.meta.get("strategy") or best.name)
     notes.append(f"tournament: {winner} ({stats.get('games', '?')} games, "
