@@ -1,0 +1,33 @@
+# Environment & credentials (never commit real keys!)
+.env
+.env.*
+dev.env
+*.env
+!*.env.example
+credentials.*
+secrets.*
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Arena practice outputs, logs & local memory
+results/
+logs/
+memory/
+*.log
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
