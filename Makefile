@@ -9,13 +9,21 @@ ARENA   := arena-lite
 LABEL   ?= run
 BENCH_ARGS ?=
 
-.PHONY: help test bench smoke prep practice list image run push digest clean
+.PHONY: help test bench prep-trace prep-trace-real smoke prep practice list image run push digest clean
+
+prep-trace:
+	$(PY) scripts/prep_trace.py
+
+prep-trace-real:
+	$(PY) scripts/prep_trace.py --real --game $(GAME) --verbose
 
 bench:
 	$(PY) scripts/bench.py --label "$(LABEL)" $(BENCH_ARGS)
 
 help:
 	@echo "make test            - unit tests (stdlib unittest, no deps)"
+	@echo "make prep-trace      - visual timeline of the 10-minute prep (offline, no key)"
+	@echo "make prep-trace-real GAME=pig - same, against the real gateway"
 	@echo "make bench           - benchmark + delta vs the previous run of the same config"
 	@echo "make smoke           - scripted protocol run against main.py (no network)"
 	@echo "make list            - practice games in arena-lite"
