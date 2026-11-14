@@ -135,6 +135,7 @@ class PrepResult:
     rules: str = ""
     genpolicy: str | None = None
     genmodel: str | None = None
+    strategy: str = ""
     cached: bool = False
     elapsed: float = 0.0
     calls: int = 0
@@ -196,10 +197,12 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
         model_name = str(manifest.get("genmodel") or "")
         model_path = directory / model_name if model_name else None
         genmodel = str(model_path) if model_path and model_path.name == model_name and model_path.exists() else None
-        log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy), genmodel=bool(genmodel)))
+        strategy = str(manifest.get("strategy") or "")
+        log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy),
+               genmodel=bool(genmodel), strategy=strategy or "-"))
         return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                          genmodel=genmodel, cached=True, elapsed=time.time() - started,
-                          notes=["cached artifact reused"])
+                          genmodel=genmodel, strategy=strategy, cached=True,
+                          elapsed=time.time() - started, notes=["cached artifact reused"])
 
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
     call_timeout = min(180.0, max(20.0, budget_seconds * 0.55))
@@ -280,10 +283,19 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     elif GENMODEL:
         notes.append("genmodel skipped: no sample_turn")
 
+    best_strategy = ""
+    if genmodel:
+        best_strategy = _maybe_tournament(
+            genmodel, rules_all, spec, notes,
+            budget=seconds - (time.time() - started) - 60.0,
+            seed=int(fp[:8], 16) if len(fp) >= 8 else 0,
+        )
+
     manifest_doc = {
         "game_id": game_id,
         "fingerprint": fp,
         "artifact_version": ARTIFACT_VERSION,
+        "strategy": best_strategy,
         "genpolicy": (Path(genpolicy).name if genpolicy else ""),
         "genmodel": (Path(genmodel).name if genmodel else ""),
         "family": spec.family,
@@ -295,7 +307,8 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     memory.atomic_write_json(directory / "manifest.json", manifest_doc)
 
     result = PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                        genmodel=genmodel, cached=False, elapsed=time.time() - started,
+                        genmodel=genmodel, strategy=best_strategy, cached=False,
+                        elapsed=time.time() - started,
                         calls=gateway.calls, notes=notes)
     log(kv(prep="done", game=game_id, family=spec.family, variants=len(variants),
            plan_chars=len(playbook), genpolicy=bool(genpolicy), genmodel=bool(genmodel),
@@ -464,6 +477,60 @@ def _build_genmodel(
     else:
         notes.append("genmodel rejected: falling back to policy/LLM")
     return path
+
+
+def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
+                      budget: float, seed: int) -> str:
+    """Rank decision strategies on the validated model by self-play; return the winner's name.
+
+    Only for perfect-information games: a deterministic model cannot referee a hidden-information game.
+    Everything is best-effort: missing modules, a timeout or an exception simply keep the default search.
+    """
+    if os.environ.get("HARNESS_TOURNAMENT", "0") != "1" or budget < 60.0:
+        return ""
+    if spec.hidden_information or spec.family in ("bluff", "deals", "truth", "guardrails"):
+        return ""
+    try:
+        from . import candidates as candidate_module
+        from . import selfplay, tournament
+    except ImportError:
+        notes.append("tournament skipped: modules not available")
+        return ""
+
+    strategies = ["search", "greedy"]
+    if (spec.simultaneous or spec.family == "read_opponent") and os.path.exists(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_matrix.py")):
+        strategies.insert(1, "matrix")
+
+    def candidate(name: str) -> object:
+        return candidate_module.Candidate(kind="strategy", name=name, path=None,
+                                          meta={"strategy": name})
+
+    def play(a, b, game_seed: int) -> float:
+        result = selfplay.play_game(model_path, rules,
+                                    (a.meta["strategy"], b.meta["strategy"]),
+                                    seed=game_seed, max_plies=120, seconds_per_move=0.08)
+        if result.error or result.winner is None:
+            return 0.5
+        return 1.0 if result.winner == 0 else 0.0
+
+    try:
+        best, stats = tournament.run(
+            candidates=[candidate(name) for name in strategies],
+            baselines=[candidate("random")],
+            play=play,
+            budget_s=min(150.0, budget),
+            seed=seed,
+        )
+    except Exception as exc:  # noqa: BLE001 - prep must never die for an experiment
+        notes.append(f"tournament skipped: {type(exc).__name__}")
+        return ""
+    winner = str(best.meta.get("strategy") or best.name)
+    notes.append(f"tournament: {winner} ({stats.get('games', '?')} games, "
+                 f"score {best.score:.2f}, timed_out={stats.get('timed_out')})")
+    log(kv(tournament=winner, games=stats.get("games"), score=round(best.score, 3),
+           timed_out=stats.get("timed_out")))
+    return winner
 
 
 def _strip_code(text: str) -> str:

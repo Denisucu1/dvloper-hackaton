@@ -69,6 +69,7 @@ class Engine:
         self._seat_logged = False
         self.genpolicy_path = genpolicy_path
         self.model_path: str | None = None
+        self.strategy_hint = ""
         self.rules = ""
         self._load_generated()
         self._solvers = _solvers()
@@ -87,6 +88,7 @@ class Engine:
         candidate = directory / name
         if name and candidate.name == name and candidate.exists():
             self.model_path = str(candidate)
+        self.strategy_hint = str(manifest.get("strategy") or "")
         if not self.genpolicy_path:
             policy_name = str(manifest.get("genpolicy") or "")
             policy = directory / policy_name
@@ -126,7 +128,12 @@ class Engine:
             budget = min(3.0, max(1.0, timeout * 0.7))
             # Strategy routing inside the sandbox: the generated model never runs in our process.
             strategy, matrix_path, chance_path = "search", "", ""
-            if _flag("HARNESS_MATRIX") and (self.spec.simultaneous or self.spec.family == "read_opponent"):
+            if _flag("HARNESS_TOURNAMENT") and self.strategy_hint in ("matrix", "chance"):
+                strategy = self.strategy_hint
+                matrix_path = _sibling("solver_matrix.py") if strategy == "matrix" else ""
+                chance_path = _sibling("solver_chance.py") if strategy == "chance" else ""
+            if strategy == "search" and _flag("HARNESS_MATRIX") and (
+                    self.spec.simultaneous or self.spec.family == "read_opponent"):
                 matrix_path = _sibling("solver_matrix.py")
                 if matrix_path:
                     strategy = "matrix"
