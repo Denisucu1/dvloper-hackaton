@@ -269,6 +269,22 @@ def _canon(text: object) -> str:
     return _nfkc(text).casefold()
 
 
+_LEET_TOKEN = re.compile(r"[\w@$|]+", re.UNICODE)
+
+
+def _leet(text: object) -> str:
+    """Check-only leet view: fold 0/1/3/4/5/7 and lookalike symbols inside word tokens.
+
+    Folding is per token, not over the whole line, so ordinary numbers stay intact ("150" is a number,
+    not "iso"). Tokens are word runs; punctuation is left where it is so word boundaries survive.
+    """
+    def fold(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return token if token.isdigit() else token.translate(_LEET)
+
+    return _LEET_TOKEN.sub(fold, _canon(text))
+
+
 def _skeleton(text: object) -> str:
     """A check-only view that folds confusables and strips accents/invisible characters.
 
@@ -478,7 +494,7 @@ class ChatPolicy:
     @staticmethod
     def tag(text: str) -> list[str]:
         """Tags for one opponent line. Matching runs on normalized copies; the original text is kept."""
-        views = (_canon(text), _skeleton(text))
+        views = (_canon(text), _leet(text), _skeleton(text))
         return [name for name, patterns in _RX.items() if any(rx.search(view) for rx in patterns for view in views)]
 
     def analyze(self, chat_lines: list[dict] | None, legal: list[str] | None = None) -> ChatIntel:
