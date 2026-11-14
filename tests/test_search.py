@@ -197,7 +197,8 @@ class BothPick:
 
 
 class WideAndSimultaneousTests(unittest.TestCase):
-    def test_wide_game_uses_mcts_and_finds_the_top_move(self):
+    def test_wide_game_finds_the_top_move(self):
+        self.assertEqual(search.route_for(WidePick(), 0), "alphabeta")
         action, value = search.best_action(WidePick(), 0, seconds=0.8)
         self.assertIsNotNone(action)
         self.assertGreaterEqual(int(action), 90)
@@ -211,7 +212,7 @@ class WideAndSimultaneousTests(unittest.TestCase):
         # Against a uniform opponent the top action dominates; MCTS must find a strong one.
         self.assertGreaterEqual(int(action), 7)
 
-    def test_mcts_respects_the_time_budget(self):
+    def test_wide_search_respects_the_time_budget(self):
         started = time.monotonic()
         search.best_action(WidePick(), 0, seconds=0.2)
         self.assertLess(time.monotonic() - started, 1.5)
@@ -233,6 +234,124 @@ class WideAndSimultaneousTests(unittest.TestCase):
 
         action, _ = search.best_action(Broken(), 0, seconds=0.2)
         self.assertTrue(action is None or isinstance(action, str))
+
+
+class Place:
+    """Wide placement game: any empty cell, line of `connect` in a row. Used to test MCTS on >20 moves."""
+
+    def __init__(self, size=5, connect=4, board=None, seat=0):
+        self.size = size
+        self.connect = connect
+        self.board = list(board or ["."] * (size * size))
+        self.seat = seat
+
+    @staticmethod
+    def name(index, size):
+        return "ABCDEFG"[index % size] + str(index // size + 1)
+
+    @staticmethod
+    def index(action, size):
+        return (int(action[1:]) - 1) * size + "ABCDEFG".index(action[0].upper())
+
+    def windows(self):
+        n, k = self.size, self.connect
+        out = []
+        for r in range(n):
+            for c in range(n):
+                for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+                    cells = []
+                    for i in range(k):
+                        rr, cc = r + dr * i, c + dc * i
+                        if 0 <= rr < n and 0 <= cc < n:
+                            cells.append(rr * n + cc)
+                    if len(cells) == k:
+                        out.append(cells)
+        return out
+
+    def update(self, observation):
+        return None
+
+    def legal_actions(self, seat):
+        return [self.name(i, self.size) for i, cell in enumerate(self.board) if cell == "."]
+
+    def apply(self, seat, action):
+        index = self.index(action, self.size)
+        if self.board[index] != ".":
+            raise ValueError("occupied")
+        self.board[index] = "X" if seat == 0 else "O"
+
+    def winner(self):
+        for cells in self.windows():
+            marks = {self.board[i] for i in cells}
+            if len(marks) == 1 and marks.pop() != ".":
+                return 0 if "X" in {self.board[cells[0]]} else 1
+        return None
+
+    def is_terminal(self):
+        return self.winner() is not None or "." not in self.board
+
+    def to_move(self):
+        if self.is_terminal():
+            return []
+        x = self.board.count("X")
+        o = self.board.count("O")
+        return [0 if x == o else 1]
+
+    def score(self, seat):
+        w = self.winner()
+        if w is None:
+            return 0.5
+        return 1.0 if w == seat else 0.0
+
+    def evaluate(self, seat):
+        me, opp = ("X", "O") if seat == 0 else ("O", "X")
+        mine = theirs = 0
+        for cells in self.windows():
+            marks = {self.board[i] for i in cells}
+            if opp in marks:
+                continue
+            own = sum(1 for i in cells if self.board[i] == me)
+            if own:
+                mine += own
+        for cells in self.windows():
+            marks = {self.board[i] for i in cells}
+            if me in marks:
+                continue
+            own = sum(1 for i in cells if self.board[i] == opp)
+            if own:
+                theirs += own
+        total = max(1, len(self.windows()) * self.connect)
+        return min(1.0, max(0.0, 0.5 + 0.4 * (mine - theirs) / total))
+
+    def clone(self):
+        return Place(self.size, self.connect, list(self.board), self.seat)
+
+
+class WideTacticsTests(unittest.TestCase):
+    def test_empty_board_prefers_the_centre(self):
+        model = Place(size=5, connect=4)
+        self.assertEqual(search.route_for(model, 0), "alphabeta")
+        action, value = search.best_action(model, 0, seconds=1.0)
+        self.assertEqual(action, "C3")
+
+    def test_blocks_an_open_line_that_would_win(self):
+        # O has A1-B1-C1; only D1 stops the fourth stone. X has three harmless stones elsewhere.
+        board = ["."] * 36
+        board[0], board[1], board[2] = "O", "O", "O"      # A1 B1 C1
+        board[5], board[28], board[19] = "X", "X", "X"     # F6 E5 B4 (no line)
+        model = Place(size=6, connect=4, board=board)
+        self.assertEqual(search.route_for(model, 0), "alphabeta")
+        action, _ = search.best_action(model, 0, seconds=1.0)
+        self.assertEqual(action, "D1")
+
+    def test_takes_an_immediate_win_before_searching(self):
+        board = ["."] * 36
+        board[0], board[1], board[2] = "X", "X", "X"      # we can win on D1
+        board[5], board[28], board[19] = "O", "O", "O"
+        model = Place(size=6, connect=4, board=board)
+        action, value = search.best_action(model, 0, seconds=0.5)
+        self.assertEqual(action, "D1")
+        self.assertEqual(value, 1.0)
 
 
 class StandaloneLoadTests(unittest.TestCase):

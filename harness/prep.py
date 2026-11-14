@@ -29,6 +29,32 @@ from .spec import FAMILIES, Spec, fallback_spec
 # Prep spends its budget in this order: understanding (always), policy (cheap), simulator (expensive).
 GENMODEL = os.environ.get("HARNESS_GENMODEL", "1") == "1"
 
+# Code generation is not free: prep has one clock and one key. These families cannot use a generated
+# simulator, so we skip it instead of spending two attempts on a model that would be wrong or useless.
+_SKIP_SIM_FAMILIES = {
+    "truth": "QA game: the answer comes from the document, there is no game tree",
+    "guardrails": "speech game: the move is a safe answer, not a search",
+    "bluff": "private-card family: minimax cannot see the opponent's card, a simulator would invent it",
+    "deals": "negotiation: the move depends on private values and chat, not a search tree",
+}
+
+
+def simgen_worthwhile(spec: Spec) -> tuple[bool, str]:
+    """Whether a generated simulator can help this game. Cheap, deterministic, no model call."""
+    reason = _SKIP_SIM_FAMILIES.get(spec.family)
+    if reason:
+        return False, f"{spec.family}: {reason}"
+    if spec.hidden_information:
+        return False, "hidden information: a deterministic model cannot see the opponent's state"
+    return True, ""
+
+
+def genpolicy_worthwhile(spec: Spec) -> tuple[bool, str]:
+    """A generated choose() is a shallow imitation; for QA/speech games it only adds noise."""
+    if spec.family in ("truth", "guardrails"):
+        return False, f"{spec.family}: a learned move adds nothing over the LLM and the document"
+    return True, ""
+
 _SPEC_SYSTEM = """You are the preparation engine of a game-playing harness. You get the rules of one
 two-player game (every variant) and real sample turns. You have never seen this game before.
 
@@ -187,20 +213,28 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     memory.atomic_write_text(directory / config.ARTIFACT_PLAYBOOK, playbook or "(no playbook)")
 
     genpolicy = None
-    if config.GENPOLICY and samples:
+    policy_worth, policy_why = genpolicy_worthwhile(spec)
+    if config.GENPOLICY and samples and policy_worth:
         genpolicy = _build_genpolicy(
             gateway, directory, fp, rules_all, samples, spec, notes,
             timeout=min(150.0, max(30.0, seconds - (time.time() - started) - 60.0)),
         )
+    elif config.GENPOLICY and samples:
+        notes.append(f"genpolicy skipped: {policy_why}")
+        log(f"prep: genpolicy skipped ({policy_why})")
     elif config.GENPOLICY:
         notes.append("genpolicy skipped: no sample_turn")
 
     genmodel = None
-    if GENMODEL and samples:
+    sim_worth, sim_why = simgen_worthwhile(spec)
+    if GENMODEL and samples and sim_worth:
         genmodel = _build_genmodel(
             gateway, directory, fp, game_id, rules_all, samples, spec, notes,
             timeout=min(240.0, max(0.0, seconds - (time.time() - started) - 45.0)),
         )
+    elif GENMODEL and samples:
+        notes.append(f"genmodel skipped: {sim_why}")
+        log(f"prep: simgen skipped ({sim_why})")
     elif GENMODEL:
         notes.append("genmodel skipped: no sample_turn")
 

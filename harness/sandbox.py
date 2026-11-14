@@ -131,9 +131,12 @@ module = _load("generated_model", sys.argv[1])
 search = _load("sandboxed_search", sys.argv[2])
 model = _build(module, payload["rules"], int(payload["seat"]))
 model.update(payload["observation"])
-action, value = search.best_action(model, int(payload["seat"]),
-                                   seconds=float(payload["seconds"]), max_depth=int(payload["depth"]))
-sys.stdout.write(json.dumps({"action": action, "value": value}))
+meta = search.best_action_meta(model, int(payload["seat"]),
+                               seconds=float(payload["seconds"]), max_depth=int(payload["depth"]))
+sys.stdout.write(json.dumps({"action": meta.get("action"), "value": meta.get("value"),
+                             "route": meta.get("route"), "depth": meta.get("depth"),
+                             "to_move": list(model.to_move() or []),
+                             "n_actions": len(model.legal_actions(int(payload["seat"])) or [])}))
 """
 
 
@@ -163,7 +166,7 @@ def _spawn(runner: str, args: list[str], payload: dict, timeout: float, label: s
         log(f"{label}: cannot start:", type(exc).__name__)
         return None
     if completed.returncode != 0:
-        log(f"{label}: exit", completed.returncode, completed.stderr.strip()[:200])
+        log(f"{label}: exit", completed.returncode, completed.stderr.strip()[-600:])
         return None
     try:
         value = json.loads(completed.stdout or "{}")
@@ -196,6 +199,51 @@ def validate_model(path: str, samples: list[dict], rules: str, timeout: float = 
     return bool(result.get("ok")), str(result.get("reason") or "unknown")
 
 
+def call_model_search(
+    path: str,
+    search_path: str,
+    rules: str,
+    observation: str,
+    legal: list[str] | None,
+    seat: int,
+    timeout: float = 3.0,
+    depth: int = 8,
+) -> dict:
+    """One play-time search inside the sandbox; returns {"action", "route", "reason", ...}.
+
+    Never raises: an empty dict means "the generated model could not answer", and the caller falls back.
+    """
+    if timeout <= 0.6:
+        return {"action": None, "route": "timeout", "reason": "budget too small"}
+    payload = {
+        "rules": rules,
+        "observation": observation,
+        "seat": seat,
+        "seconds": max(0.1, min(1.5, timeout * 0.6)),
+        "depth": depth,
+    }
+    result = _spawn(_MODEL_PLAY_RUNNER, [path, search_path], payload, timeout, "genmodel")
+    if not result:
+        return {"action": None, "route": "sandbox-failed", "reason": "no result"}
+    action = result.get("action")
+    if action is None:
+        return {"action": None, "route": str(result.get("route") or "no-action"),
+                "reason": f"to_move={result.get('to_move')} n_actions={result.get('n_actions')}",
+                "value": result.get("value")}
+    if legal is not None:
+        verified = normalize(action, legal)
+        if verified is None:
+            return {"action": None, "route": "illegal", "reason": f"{action!r} not in legal"}
+        action = verified
+    else:
+        text = str(action)
+        if not text or len(text) > 120:
+            return {"action": None, "route": "bad-action", "reason": repr(text)[:80]}
+        action = text
+    return {"action": action, "value": result.get("value"), "route": result.get("route"),
+            "depth": result.get("depth"), "reason": "ok"}
+
+
 def call_model_best(
     path: str,
     search_path: str,
@@ -206,26 +254,8 @@ def call_model_best(
     timeout: float = 3.0,
     depth: int = 8,
 ) -> str | None:
-    """One play-time search inside the sandbox. Returns None on any failure so the caller can fall back."""
-    if timeout <= 0.6:
-        return None
-    payload = {
-        "rules": rules,
-        "observation": observation,
-        "seat": seat,
-        "seconds": max(0.1, min(1.5, timeout * 0.6)),
-        "depth": depth,
-    }
-    result = _spawn(_MODEL_PLAY_RUNNER, [path, search_path], payload, timeout, "genmodel")
-    if not result:
-        return None
-    action = result.get("action")
-    if action is None:
-        return None
-    if legal is not None:
-        return normalize(action, legal)
-    text = str(action)
-    return text if 0 < len(text) <= 120 else None
+    """Compatibility wrapper: the action only, or None. Prefer `call_model_search` for diagnostics."""
+    return call_model_search(path, search_path, rules, observation, legal, seat, timeout, depth).get("action")
 
 
 def inspect_source(source: str) -> str | None:
