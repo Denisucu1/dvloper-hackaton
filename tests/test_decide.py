@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from harness import decide
@@ -26,7 +27,7 @@ class FakeGateway:
     def ask(self, system, user, **kwargs):
         self.calls += 1
         self.prompts.append(system + "\n---\n" + user)
-        return self.text
+        return self.text or (json.dumps(self.payload) if self.payload else "")
 
 
 def run(gateway, legal=("A1", "B2", "C3"), chat_lines=None, spec=None):

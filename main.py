@@ -100,6 +100,7 @@ def handle_end(msg: dict, session: Session) -> None:
     session.games_played += 1
     log(kv(end=msg.get("game_index"), result=msg.get("result"), reason=str(msg.get("reason"))[:120],
            match_score=msg.get("match_score"), match_over=msg.get("match_over")))
+    decide.observe_end(session.chat, msg, session.game)  # opponent chat profile, for later games
     memory.record_result(
         session.game_id,
         {
