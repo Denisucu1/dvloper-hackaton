@@ -28,8 +28,14 @@ from scripts.probes import chat_gate_probe  # noqa: F401,E402
 from scripts.probes import memory_probe  # noqa: F401,E402
 from scripts.probes import search_probe  # noqa: F401,E402
 from scripts.probes import solvers_probe  # noqa: F401,E402
+from scripts.probes import matrix_probe  # noqa: F401,E402
+from scripts.probes import chance_probe  # noqa: F401,E402
+from scripts.probes import cfr_probe  # noqa: F401,E402
 from scripts.probes import engine_probe  # noqa: F401,E402
+from scripts.probes import selfplay_probe  # noqa: F401,E402
+from scripts.probes import tournament_probe  # noqa: F401,E402
 from scripts.probes import bench_probe  # noqa: F401,E402
+from scripts.probes import prep_policy_probe  # noqa: F401,E402
 from scripts.probes import protocol_probe  # noqa: F401,E402
 
 __all__ = [

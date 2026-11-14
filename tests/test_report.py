@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from scripts import report
-from scripts.probes import base
+from scripts.probes import base, registry
 
 
 def result(name: str, component: str, score: float, n: int = 1, p50: float = 0.0,
@@ -53,6 +53,20 @@ class _CrashProbe(base.Probe):
 
     def run(self) -> dict:
         raise RuntimeError("boom")
+
+
+class RegistryTests(unittest.TestCase):
+    def test_all_t2_components_are_registered_once(self):
+        probes = registry()
+        names = [probe.name for probe in probes]
+        self.assertEqual(len(names), len(set(names)))
+        for required in (
+            "actions.normalize", "chat.gate", "memory.atomic", "search.routing",
+            "solvers.family", "solvers.matrix", "solvers.chance", "solvers.cfr",
+            "engine.routing", "selfplay.paired", "tournament.roundrobin",
+            "bench.replay", "prep.policy", "protocol.smoke",
+        ):
+            self.assertIn(required, names)
 
 
 class AggregationTests(unittest.TestCase):
