@@ -88,6 +88,11 @@ MAX_PLAYBOOK_CHARS = int(os.environ.get("HARNESS_MAX_PLAYBOOK", "4200"))
 # Voting (decide.py): on a turn where no code move exists, this many answers are asked for in parallel and
 # the move most of them agree on is played. 1 switches voting off.
 VOTERS = int(os.environ.get("HARNESS_VOTERS", "3"))
+# The council (harness/council.py): its own cap on the clock, and how much clock must be left for the
+# strategists to think.
+COUNCIL_TIMEOUT = float(os.environ.get("HARNESS_COUNCIL_TIMEOUT", "8"))
+COUNCIL_MIN_SECONDS = float(os.environ.get("HARNESS_COUNCIL_MIN", "3"))
+COUNCIL_THINK_SECONDS = float(os.environ.get("HARNESS_COUNCIL_THINK", "12"))
 VOTE_MIN_SECONDS = float(os.environ.get("HARNESS_VOTE_MIN", "8"))
 # One retry on a busy gateway (429 / 5xx): how long to wait, and how much of the call's own timeout must
 # still be left for the retry to be worth making.
