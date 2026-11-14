@@ -398,6 +398,155 @@ class WideTacticsTests(unittest.TestCase):
         self.assertEqual(value, 1.0)
 
 
+def _connect_windows(cols, rows, need):
+    """Every length-`need` line on a `cols` x `rows` board, as index tuples."""
+    out = []
+    for row in range(rows):
+        for col in range(cols):
+            for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+                cells = []
+                for step in range(need):
+                    rr, cc = row + dr * step, col + dc * step
+                    if not (0 <= rr < rows and 0 <= cc < cols):
+                        cells = []
+                        break
+                    cells.append(rr * cols + cc)
+                if cells:
+                    out.append(tuple(cells))
+    return out
+
+
+class WideConnect:
+    """9x7 five-in-a-row: the shape of scripts/lab/models/connect5.py (63 legal actions).
+
+    Same board, rules and action names as the lab model, with a leaner evaluate(): the lab model rebuilds
+    every window on every call (~0.25 ms), which a depth-3 search calls ~18k times. That is 5 s, and the
+    timing test would then measure the fixture's scoring cost instead of the search's depth.
+    """
+
+    COLS, ROWS, NEED = 9, 7, 5
+    COLUMNS = "ABCDEFGHI"
+    WINDOWS = tuple(_connect_windows(COLS, ROWS, NEED))
+
+    def __init__(self, board=None, current=0):
+        self.board = list(board or ["."] * (self.COLS * self.ROWS))
+        self.current = int(current)
+        self.winner = self._winner()
+        self.over = self.winner is not None or "." not in self.board
+
+    # --- arena surface -----------------------------------------------------
+    def update(self, observation):
+        return None
+
+    def legal_actions(self, seat):
+        if self.over or int(seat) != self.current:
+            return []
+        return [self._name(i) for i, cell in enumerate(self.board) if cell == "."]
+
+    def apply(self, seat, action):
+        index = self._index(action)
+        if self.board[index] != ".":
+            raise ValueError("occupied")
+        self.board[index] = "X" if int(seat) == 0 else "O"
+        self.winner = self._winner()
+        self.over = self.winner is not None or "." not in self.board
+        if not self.over:
+            self.current = 1 - int(seat)
+
+    def is_terminal(self):
+        return self.over
+
+    def to_move(self):
+        return [] if self.over else [self.current]
+
+    def score(self, seat):
+        if self.winner is None:
+            return 0.5
+        return 1.0 if self.winner == int(seat) else 0.0
+
+    def evaluate(self, seat):
+        me, opp = ("X", "O") if int(seat) == 0 else ("O", "X")
+        mine = theirs = 0
+        board = self.board
+        for window in self.WINDOWS:
+            marks = [board[i] for i in window]
+            if opp not in marks:
+                mine += 1
+            if me not in marks:
+                theirs += 1
+        total = max(1, mine + theirs)
+        return max(0.0, min(1.0, 0.5 + 0.4 * (mine - theirs) / total))
+
+    def clone(self):
+        return WideConnect(self.board, self.current)
+
+    def key(self):
+        return "".join(self.board) + str(self.current)
+
+    @classmethod
+    def _name(cls, index):
+        return cls.COLUMNS[index % cls.COLS] + str(index // cls.COLS + 1)
+
+    @classmethod
+    def _index(cls, action):
+        return (int(action[1:]) - 1) * cls.COLS + cls.COLUMNS.index(action[0].upper())
+
+    def _winner(self):
+        board = self.board
+        for window in self.WINDOWS:
+            first = board[window[0]]
+            if first != "." and all(board[i] == first for i in window[1:]):
+                return 0 if first == "X" else 1
+        return None
+
+
+class WideRootCapTests(unittest.TestCase):
+    """The 63-action board that stalled at depth 2: root ranking, a cap, then real iterative deepening."""
+
+    def test_sixty_three_actions_reach_depth_three(self):
+        model = WideConnect()
+        self.assertEqual(len(model.legal_actions(0)), 63)
+        self.assertGreater(63, search.WIDE_ACTIONS)
+        started = time.monotonic()
+        meta = search.best_action_meta(model, 0, seconds=1.5, max_depth=8)
+        elapsed = time.monotonic() - started
+        self.assertEqual(meta["route"], "alphabeta")
+        self.assertIn(meta["action"], model.legal_actions(0))
+        self.assertGreaterEqual(meta["depth"], 3)
+        self.assertLess(elapsed, 2.0)  # 1.5 s budget plus a small scheduling margin
+
+    def test_root_shortlist_is_capped_and_deterministic(self):
+        model = WideConnect()
+        _, safe = search.tactical_root(model, 0, model.legal_actions(0))
+        self.assertGreater(len(safe), search.WIDE_ACTIONS)
+        first = search.root_shortlist(model, 0, safe)
+        second = search.root_shortlist(model, 0, safe)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), search.WIDE_ROOT_ACTIONS)
+        # The centre cells tie on one-ply score; the action string breaks the tie, so the order is stable.
+        self.assertEqual(first[0], "E3")
+
+    def test_cap_keeps_the_uncapped_choice(self):
+        # Before the cap alpha-beta was full width at depth 2; reproduce that exact path as the baseline.
+        model = WideConnect()
+        _, safe = search.tactical_root(model, 0, model.legal_actions(0))
+        before_action, before_value = search.Searcher(
+            model, 0, seconds=1.5, max_depth=2, root_actions=safe).best()
+        meta = search.best_action_meta(model, 0, seconds=1.5, max_depth=8)
+        self.assertLessEqual(meta["root_actions"], search.WIDE_ROOT_ACTIONS)
+        self.assertTrue(
+            meta["action"] == before_action or meta["value"] >= before_value,
+            (before_action, before_value, meta["action"], meta["value"]),
+        )
+
+    def test_flat_heuristic_keeps_the_full_root(self):
+        # A model whose evaluate() cannot rank (WidePick returns 0.5 everywhere) must keep every action:
+        # an alphabetical "top 24" would hide the winning pick 90+.
+        model = WidePick()
+        actions = model.legal_actions(0)
+        self.assertEqual(search.root_shortlist(model, 0, actions), actions)
+
+
 class DeferredWin:
     """Seat 0 has three first moves and wins only with 'c', two plies later.
     evaluate() always returns 1.0, which used to make the root believe it had mate at depth 1."""
