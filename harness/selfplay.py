@@ -106,19 +106,29 @@ def choose(strategy: Strategy, model, seat: int, seconds: float, rng: random.Ran
     """One move from `strategy`, on a model the caller may mutate. Never raises."""
     try:
         if strategy == "search":
-            action, _ = search.best_action(model, seat, seconds=seconds, max_depth=8)
+            # Depth/iteration-capped, not wall-clock capped: a self-play benchmark must be reproducible.
+            try:
+                joint = len(model.to_move() or []) > 1
+            except Exception:  # noqa: BLE001
+                joint = False
+            if joint:
+                engine = search.Mcts(model, seat, seconds=5.0, max_iters=800,
+                                     seed=rng.randrange(2 ** 31))
+                action, _ = engine.best()
+                return action
+            action, _ = search.best_action(model, seat, seconds=30.0, max_depth=2)
             return action
         if strategy == "matrix":
             module = _strategy_module("matrix", "matrix")
             if module is None:
                 return None
-            action, _ = module.MatrixSolver().propose_joint(model, seat, seconds=seconds, rng=rng)
+            action, _ = module.MatrixSolver().propose_joint(model, seat, seconds=5.0, rng=rng)
             return action
         if strategy == "chance":
             module = _strategy_module("chance", "matrix")
             if module is None:
                 return None
-            action, _ = module.ChanceSolver().propose(model, seat, seconds=seconds, max_depth=4, rng=rng)
+            action, _ = module.ChanceSolver().propose(model, seat, seconds=5.0, max_depth=2, rng=rng)
             return action
         if strategy == "greedy":
             actions = _legal(model, seat)
@@ -176,6 +186,19 @@ def play_game(model_path: str, rules: str, strategies: tuple[str, str], seed: in
             # GameModel.apply(seat, action), not the arena's dict form: apply each mover on the canonical state.
             for mover, action in actions.items():
                 model.apply(mover, action)
+            # Resolve chance nodes that the move opened (dice, draws) before the next decision.
+            for _ in range(20):
+                getter = getattr(model, "chance_actions", None)
+                if not callable(getter) or _terminal(model):
+                    break
+                chances = list(getter() or [])
+                if not chances:
+                    break
+                outcomes = [str(outcome) for outcome, _ in chances]
+                weights = [max(0.0, float(weight)) for _, weight in chances]
+                if not outcomes:
+                    break
+                model.apply_chance(rng.choices(outcomes, weights=weights, k=1)[0])
         except Exception as exc:  # noqa: BLE001
             return MatchResult(None, plies, (0.5, 0.5), error=f"apply: {type(exc).__name__}")
         plies += 1

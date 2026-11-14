@@ -49,6 +49,7 @@ def stages(args) -> list[tuple[str, list[str], float]]:
         ("probes", [PY, "scripts/report.py", "--no-color"] + (["--fast"] if args.fast else []), 180),
         ("protocol", [PY, "scripts/smoke.py"], 120),
         ("games", [PY, "scripts/game_smoke.py", "--no-color"], 120),
+        ("performance", [PY, "scripts/lab.py", "--quick"] + (["--verbose"] if args.verbose else []), 240),
     ]
     if not args.no_prep_trace:
         plan.append(("prep trace", [PY, "scripts/prep_trace.py"], 180))
@@ -69,6 +70,7 @@ def main() -> int:
     parser.add_argument("--best-of", type=int, default=1)
     parser.add_argument("--label", default="pipeline")
     parser.add_argument("--no-prep-trace", action="store_true")
+    parser.add_argument("--verbose", action="store_true", help="print each stage's full output")
     args = parser.parse_args()
 
     results = []
@@ -80,6 +82,9 @@ def main() -> int:
         result = run(name, cmd, timeout)
         results.append(result)
         print(("PASS" if result["ok"] else "FAIL") + f"  {result['seconds']}s  {result['note']}")
+        if args.verbose and result.get("tail"):
+            for line in result["tail"].strip().splitlines():
+                print(f"      {line}")
 
     failed = [result for result in results if not result["ok"]]
     total = round(sum(result["seconds"] for result in results), 1)

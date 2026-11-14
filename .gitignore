@@ -41,3 +41,6 @@ scripts/.report-history.jsonl
 
 # probe report history
 bench/report-history.jsonl
+
+# prep lab history
+scripts/lab/.history.jsonl

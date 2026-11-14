@@ -76,6 +76,33 @@ playout/result for every game: **31/31 variant checks pass**.
 Plus the existing `tg_connect4` (now with the 7x9 connect-5 shape), `tg_blotto_probe`, `tg_chess`,
 `tg_bluff`, `tg_deals`, `tg_guardrails`, `tg_simul`, `tg_truth`.
 
+
+## Performance lab (battle royale)
+
+`scripts/lab.py` measures the decision stack on three fixture simulators (wide 9x7 connect-5, simultaneous
+Blotto, chance/dice) and repeats the prep tournament as a progressive battle royale:
+
+```
+iter 1: incumbent (greedy)
+iter 2: + alpha-beta
+iter 3: + family specialist (matrix / expectimax)
+```
+
+Every strategy is scored in the same gauntlet with the same seeds, so a new candidate can only raise the
+best score. The performance index (mean best score) is stored in `scripts/lab/.history.jsonl`, and the next
+run shows the delta. Current values:
+
+| model | winner | score | improvement |
+|---|---|---|---|
+| connect5 | search | 0.825 | +0.350 |
+| blotto | matrix | 1.000 | +0.350 |
+| chance_pig | chance | 0.850 | +0.350 |
+| **index** | | **0.892** | deterministic across runs |
+
+The pipeline runs it as the `performance` stage (`--verbose` prints every iteration, including the
+per-strategy scores). Search/UCT and the solvers are seeded and iteration-capped inside self-play, so the
+index is reproducible; a changed index means changed code, not CPU timing.
+
 ## Known limits / next
 
 - Tournament self-play needs the generated `Model` to be usable from `__init__` (no observation text).
