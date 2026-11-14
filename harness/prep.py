@@ -203,13 +203,30 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
     call_timeout = min(180.0, max(20.0, budget_seconds * 0.55))
 
+    spec_user = _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id),
+                                  variants=_variant_blob(variants))
     data = gateway.ask_json(
         _SPEC_SYSTEM,
-        _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id), variants=_variant_blob(variants)),
+        spec_user,
         max_tokens=1600,
         timeout=call_timeout,
         temperature=0.2,
     )
+    if not data:
+        # One retry is cheap insurance on an unseen game: a failed parse leaves the specialist without a
+        # family, playbook or speech rules, which changes chat and turn policy for the whole game.
+        left = seconds - (time.time() - started) - 120.0
+        if gateway.affordable and left > 20.0:
+            notes.append("spec retry after an unparseable answer")
+            data = gateway.ask_json(
+                _SPEC_SYSTEM + "\nReturn ONLY the JSON object, with no prose before or after it.",
+                spec_user,
+                max_tokens=2000,
+                timeout=min(90.0, max(20.0, left / 2.0)),
+                temperature=0.0,
+            )
+            if data:
+                notes.append("spec from model (retry)")
     if data:
         spec = Spec.from_dict({**data, "game_id": game_id}, fp)
         spec.source = "prep"
