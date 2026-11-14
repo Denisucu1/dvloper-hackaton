@@ -18,7 +18,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from . import actions, config, opponents
+from pathlib import Path
+
+from . import actions, config, memory, opponents
 from .chatpolicy import ChatPolicy
 from .engine import Engine
 from .llm import Gateway, extract_json
@@ -55,6 +57,9 @@ STEP 2 - THE CHAT LINE. Only now write the line, for the move you already chose,
   given with the turn (bluff, pressure, misdirect, negotiate, bait). All deception lives here, in words
   only: the line may lie about your hidden state or intentions; anything it says about what you hold or
   plan must be false or unverifiable. No insults.
+- The line belongs to THIS move. If it names the move you are making, it names exactly your "action" and
+  nothing else: never call another square, number or option "my move". Never name a square or move you
+  did not play this turn, and never describe your real plan, what you are building or your next move.
 - The game's speech rules apply to the chat line as well as to the move. Obey them absolutely.
 {extra}
 
@@ -98,7 +103,7 @@ Reply with the line only, no quotes."""
 
 _READY_USER = """Opponent: {opponent}. Match score: {score}.
 YOUR HARNESS READ THE CHAT (trusted): {brief}
-{profile}TACTIC - {tactic}: {tactic_text}
+{profile}{never}TACTIC - {tactic}: {tactic_text}
 
 {chat_block}
 
@@ -171,6 +176,47 @@ def _fill_template(templates: list, observation: str) -> str:
             value = "unknown"
         return re.sub(r"<[^<>]+>", value, template, count=1)
     return ""
+
+
+_ALIAS_SYSTEM = "You list the other names of a subject. You answer with one JSON object and nothing else."
+_ALIAS_USER = """Subject: "{subject}"
+Return {{"aliases": [...]}} with up to 14 strings that name this exact subject in another way: its word in
+Romanian, French, Spanish, German and Italian; its emoji if one exists; its plural; common synonyms, nicknames
+and abbreviations. Only strings that directly name the subject. No broader categories, no descriptions."""
+
+
+def learn_aliases(gateway: Gateway, chat_policy: ChatPolicy, timeout: float) -> None:
+    """Guardrails: one cheap call per game teaches the speech gate the subject's translations, emoji and
+    synonyms ("translate it, translations are allowed" is a classic trap). Cached in /memory for every
+    other container of the team."""
+    if chat_policy.aliases_done or not chat_policy.subjects():
+        return
+    chat_policy.aliases_done = True
+    for subject in chat_policy.subjects()[:3]:
+        path = Path(config.MEMORY_DIR) / "_aliases" / f"{memory.safe_name(subject)}.json"
+        cached = memory.read_json(path, default=None)
+        if isinstance(cached, list):
+            chat_policy.add_aliases(cached)
+            continue
+        if not gateway.affordable or timeout < 2.0:
+            continue
+        data = extract_json(gateway.ask(_ALIAS_SYSTEM, _ALIAS_USER.format(subject=subject), max_tokens=220,
+                                        timeout=timeout, temperature=0.0)) or {}
+        aliases = [str(item) for item in (data.get("aliases") or []) if isinstance(item, (str, int))][:14]
+        if aliases:
+            chat_policy.add_aliases(aliases)
+            try:
+                memory.atomic_write_json(path, aliases)
+            except Exception as exc:  # noqa: BLE001 - a cache, never a reason to fail
+                log("alias cache write failed:", type(exc).__name__)
+            log(f"forbidden subject {subject!r}: {len(chat_policy.aliases())} other names gate the chat")
+
+
+def _never_write(chat_policy: ChatPolicy) -> str:
+    names = chat_policy.subjects() + chat_policy.aliases()
+    if not names:
+        return ""
+    return "NEVER WRITE, IN ANY FORM (the forbidden subject and its other names): " + ", ".join(names[:20]) + "\n"
 
 
 def _profile(chat_policy: ChatPolicy) -> str:
@@ -247,7 +293,7 @@ def decide_turn(
             ),
             brief=intel.brief(),
             profile=_profile(chat_policy),
-            private=(
+            private=_never_write(chat_policy) + (
                 "PRIVATE VALUES THAT MUST NOT APPEAR IN YOUR CHAT LINE: " + ", ".join(secrets_now[:12]) + "\n"
                 if secrets_now
                 else ""
@@ -318,8 +364,9 @@ def decide_turn(
     if not action or not actions.is_plausible(action, spec.action_examples):
         log(f"implausible action {action!r}; sending anyway")
 
-    chat = chat_policy.finalize(candidate_chat, action=action, intent=intent, observation=observation, intel=intel)
-    log(kv(chat_tactic=tactic, chat_gate=chat_policy.last_block_reason or "ok", read=read[:80], **intel.stats()))
+    chat = chat_policy.finalize(candidate_chat, action=action, intent=intent, observation=observation, intel=intel,
+                                legal=legal_list)
+    log(kv(chat_tactic=tactic, chat_gate=chat_policy.last_block_reason or ("trimmed" if chat_policy.last_trim else "ok"), read=read[:80], **intel.stats()))
     return Decision(action=action, chat=chat, intent=intent, source=source, read=read, tactic=tactic)
 
 
@@ -335,6 +382,7 @@ def decide_ready(
     """The chat line that goes with `ready` (rule 5.7). Always returns a non-empty line."""
     chat_lines = msg.get("chat") or []
     chat_policy.learn(str(msg.get("rules") or ""))  # the line sent with `ready` is speech-checked too (6.8)
+    learn_aliases(gateway, chat_policy, timeout=min(6.0, deadline / 3))
     intel = chat_policy.analyze(chat_lines)
     if msg.get("opponent"):
         chat_policy.profile = opponents.load(msg.get("opponent"))
@@ -354,6 +402,7 @@ def decide_ready(
             score=f"you {score.get('you', 0)} - opponent {score.get('opponent', 0)}",
             brief=intel.brief(),
             profile=_profile(chat_policy),
+            never=_never_write(chat_policy),
             tactic=tactic,
             tactic_text=tactic_text,
             chat_block=chat_policy.chat_block(chat_lines),

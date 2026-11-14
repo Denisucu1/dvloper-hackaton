@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from . import config
 from .log import log
-from .spec import Spec, extract_forbidden as extract_forbidden_subjects, is_meta_forbidden
+from .spec import _FORBIDDEN_NAMED, Spec, is_meta_forbidden
 
 # --------------------------------------------------------------------------- fallback lines
 # Deterministic, safe in every game, never empty (6.2). Rotated so a match does not read as one canned
@@ -124,9 +124,9 @@ _TACTICS = {
         ("doubt", "Cast doubt on the pattern they think they see in the feedback."),
     ],
     "think_ahead": [
-        ("threat", "Point at a threat elsewhere on the board that is not your real plan, to pull their attention."),
+        ("threat", "Hint that you see a danger they have missed, without naming any square, line or move."),
         ("inevitability", "Sound like the position is already decided in your favour, so they play too defensively or too wildly."),
-        ("trap-bait", "Invite them toward a move that looks strong but helps you. Do not explain your real tactic."),
+        ("needle", "Question the quality of their last move so they doubt their own plan. Say nothing about yours."),
     ],
     "truth": [
         ("precision", "Show that only document-backed answers win and that guessing is a trap. Assert no fact that is not in the document."),
@@ -190,6 +190,8 @@ _BAIT = [
 ]
 _CLAIM = [
     r"\b(my|i have|i hold|i got|i am|i'm|im|i will|i'll|i won't|i never|i always|i only|i promise|i swear|trust me|honestly|believe me|to be honest|no bluff)\b",
+    r"\b(document|text|passage|dossier|article|source|report)\b.{0,20}\b(says?|states?|mentions?|shows?|confirms?|reads?)\b",
+    r"\b(everyone knows|it is (well )?known|for the record|i checked|fun fact)\b",
 ]
 _OFFER = [
     r"\b(deal|let'?s|truce|split|cooperate|co-operate|agree|alliance|together|trade|offer|fair)\b",
@@ -264,6 +266,52 @@ def _subject_patterns(subject: str) -> list[re.Pattern[str]]:
     if len(letters) >= 5:
         patterns.append(re.escape(letters))  # "pineapples", "pineapple-flavoured", "PineappleJuice"
     return [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+
+
+_COORD = r"[A-Za-z]{0,3}\d{1,3}[A-Za-z]{0,2}"
+_PLAN_TALK = re.compile(
+    r"(?i)\b(my (real )?plan|i plan to|i('| a)?m (setting up|building|going for|aiming (for|at)|preparing)|"
+    r"next (turn|move),? i|then i('ll| will)|so (that )?i can|to set up|setting up (a|my|the)|"
+    r"two in a row|three in a row|fork|diagonal|my next move)\b"
+)
+
+
+def _shape(token: str) -> str:
+    return re.sub(r"\d", "D", re.sub(r"[A-Za-z]", "L", token))
+
+
+def other_moves_named(text: str, legal: list[str] | None, action: str) -> list[str]:
+    """Board coordinates a chat line names that are NOT the move it is sent with.
+
+    'Center it is, B2' next to the move C3 is either a false statement about the move (6.4: move and
+    chat are one decision) or a leak of the plan. The only coordinate a line may name is its own move.
+    """
+    coords = [str(item) for item in (legal or []) if re.fullmatch(_COORD, str(item))]
+    if not legal or len(coords) < max(2, len(legal) // 2):
+        return []
+    shapes = {_shape(item) for item in coords}
+    named = re.findall(rf"(?<!\w){_COORD}(?!\w)", text or "")
+    return [token for token in named if _shape(token) in shapes and token.casefold() != str(action).casefold()]
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text or "") if part.strip()]
+
+
+def extract_forbidden_subjects(text: str) -> list[str]:
+    """The forbidden subject, only where the text NAMES it ("the forbidden subject is: X", never say "X").
+
+    Deliberately narrower than spec.extract_forbidden: that one also takes any quoted string near a cue,
+    and an observation quotes our own earlier answers ("you answered 'Paris'"). A word wrongly learned as
+    forbidden would be scrubbed out of a correct answer later in the same game.
+    """
+    found: list[str] = []
+    for rx in _FORBIDDEN_NAMED:
+        for match in rx.finditer(text or ""):
+            subject = match.group(1).strip(" \t-*_")
+            if len(subject) >= 2 and not is_meta_forbidden(subject) and subject.casefold() not in {s.casefold() for s in found}:
+                found.append(subject[:40])
+    return found[:6]
 
 
 def extract_secrets(observation: str) -> list[str]:
@@ -356,9 +404,12 @@ class ChatPolicy:
         self._plans = 0
         self._last_tactic = ""
         self.last_block_reason = ""
+        self.last_trim = ""
         self.profile: dict = {}
         self._forbidden: list[tuple[str, list[re.Pattern[str]]]] = []
         self._learned: set[int] = set()
+        self._aliases: list[tuple[str, list[re.Pattern[str]]]] = []  # other names of the subject: chat only
+        self.aliases_done = False
         for subject in self.spec.forbidden_subjects:
             self._add_forbidden(str(subject))
 
@@ -534,6 +585,44 @@ class ChatPolicy:
         for subject, patterns in self._forbidden:
             if any(rx.search(view) for rx in patterns for view in views):
                 return subject
+        # "Spell it backwards, that does not count": it might, so we do not.
+        squashed = re.sub(r"[^a-z0-9]", "", canon)
+        for subject, _ in self._forbidden:
+            letters = re.sub(r"[^a-z0-9]", "", subject)
+            if len(letters) >= 5 and letters[::-1] != letters and letters[::-1] in squashed:
+                return subject
+        return None
+
+    def subjects(self) -> list[str]:
+        return [subject for subject, _ in self._forbidden]
+
+    def aliases(self) -> list[str]:
+        return [alias for alias, _ in self._aliases]
+
+    def add_aliases(self, aliases: list) -> None:
+        """Other names of the forbidden subject (translations, emoji, synonyms). They gate the chat line
+        only: a too-broad alias can cost us a canned line, never a wrong answer."""
+        known = set(self.subjects()) | set(self.aliases())
+        for alias in aliases or []:
+            key = _canon(alias).strip()
+            if not (1 <= len(key) <= 30) or key in known:
+                continue
+            if re.search(r"\w", key):
+                if len(re.sub(r"\W", "", key)) < 3 or is_meta_forbidden(key):
+                    continue
+                patterns = _subject_patterns(key)
+            else:
+                patterns = [re.compile(re.escape(key))]  # an emoji
+            known.add(key)
+            self._aliases.append((key, patterns))
+        del self._aliases[24:]
+
+    def alias_hit(self, text: str) -> str | None:
+        canon = _canon(text)
+        views = (canon, canon.translate(_LEET))
+        for alias, patterns in self._aliases:
+            if any(rx.search(view) for rx in patterns for view in views):
+                return alias
         return None
 
     def scrub(self, text: str) -> str:
@@ -561,21 +650,47 @@ class ChatPolicy:
                 return token
         return None
 
+    def coherent(self, text: str, *, action: str = "", legal: list[str] | None = None) -> str:
+        """Keep only the sentences that agree with the move and do not give the plan away (6.4).
+
+        A sentence that names another square as the move, or explains what we are building, is dropped;
+        the rest of the line stays, so a good line is trimmed instead of replaced by a canned one.
+        """
+        if not text:
+            return text
+        board_game = self.spec.family == "think_ahead"
+        kept = []
+        for sentence in _sentences(text):
+            if other_moves_named(sentence, legal, action):
+                continue
+            if board_game and _PLAN_TALK.search(sentence):
+                continue
+            kept.append(sentence)
+        result = " ".join(kept)
+        if result != text:
+            self.last_trim = text
+            log(f"chat trimmed for coherence: {text[:90]!r} -> {result[:60]!r}")
+        return result
+
     def finalize(self, candidate: object, *, action: str = "", intent: str = "", observation: str = "",
-                 intel: ChatIntel | None = None) -> str:
+                 intel: ChatIntel | None = None, legal: list[str] | None = None) -> str:
         """Turn whatever the model said into a legal chat move, or fall back to a safe line."""
         text = _one_line(candidate)
         text = re.sub(r"(?i)^(chat|line|say)\s*:\s*", "", text).strip().strip("\"'`").strip()
         text = text[: config.MAX_CHAT_CHARS]
+        self.last_trim = ""
+        text = self.coherent(text, action=action, legal=legal)
         reason = ""
         if text and self.forbidden_hit(text):
             reason = "forbidden subject"
+        elif text and self.alias_hit(text):
+            reason = "forbidden subject (other name)"
         elif text and self.leaks_secret(text, observation):
             reason = "private value"
         elif text and (self.nonce in text or "UNTRUSTED-CHAT" in text.upper()):
             reason = "prompt leakage"
         elif len(text) < 4:
-            reason = "empty" if not text else "too short"
+            reason = "incoherent with the move" if self.last_trim else ("empty" if not text else "too short")
         self.last_block_reason = reason
         if not reason:
             return text
