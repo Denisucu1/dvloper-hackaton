@@ -11,9 +11,11 @@ What it reads from the observation (no hidden state invented):
 - this round's action line ("This round so far: check, bet"), which must be a legal round prefix.
 
 Policy: a hand-strength estimate over the cards still unseen, compared with the pot odds a call needs.
-Strong hands (a pair, or the top card) bet; weak hands check, fold to a bet, and bluff at a fixed
-rate seeded from the observation so the choice is deterministic and reproducible. It never raises,
-never invents an action outside ``legal`` and returns None whenever the text is not clearly Leduc.
+In round one the estimate also enumerates the community card still to come, so a draw is not priced
+as a made hand. Strong hands (a pair, or the top card) bet; weak hands check, fold to a bet, and bluff
+at a fixed rate seeded from the observation so the choice is deterministic and reproducible. It never
+raises, never invents an action outside ``legal`` and returns None whenever the text is not clearly
+Leduc.
 """
 from __future__ import annotations
 
@@ -194,25 +196,50 @@ def _hand_value(private: str, community: str | None) -> tuple[int, int]:
 
 
 def _equity(private: str, community: str | None) -> float:
-    """Win + half-tie probability against one uniformly random unseen private card."""
-    counts = dict(_DECK)
-    counts[private] -= 1
+    """Win + half-tie probability against the unseen opponent hand.
+
+    Round two (community known) is an exact enumeration over the opponent's remaining private
+    card. Round one has no community card yet, so the opponent's card *and* the card that will
+    be dealt next are both unseen: enumerate every ordered (opponent, community) pair left in
+    the deck and score our final two-card hand against theirs.
+    """
+    unseen = dict(_DECK)
+    unseen[private] -= 1
     if community is not None:
-        counts[community] -= 1
-    total = sum(counts.values())
-    if total <= 0:
-        return 0.5
-    ours = _hand_value(private, community)
+        unseen[community] -= 1
+
+    total = 0
     score = 0.0
-    for rank, copies in counts.items():
-        if copies <= 0:
-            continue
-        theirs = _hand_value(rank, community)
-        if ours > theirs:
-            score += copies
-        elif ours == theirs:
-            score += 0.5 * copies
-    return score / total
+    if community is None:
+        for board, board_copies in unseen.items():
+            if board_copies <= 0:
+                continue
+            ours = _hand_value(private, board)
+            for opponent, opponent_copies in unseen.items():
+                # One copy of the board card is already on the table, not in their hand.
+                available = opponent_copies - (1 if opponent == board else 0)
+                if available <= 0:
+                    continue
+                weight = board_copies * available
+                theirs = _hand_value(opponent, board)
+                total += weight
+                if ours > theirs:
+                    score += weight
+                elif ours == theirs:
+                    score += 0.5 * weight
+    else:
+        ours = _hand_value(private, community)
+        for opponent, copies in unseen.items():
+            if copies <= 0:
+                continue
+            theirs = _hand_value(opponent, community)
+            total += copies
+            if ours > theirs:
+                score += copies
+            elif ours == theirs:
+                score += 0.5 * copies
+
+    return score / total if total else 0.5
 
 
 def _bluff_roll(observation: str, seat: int, turn: int) -> float:
@@ -239,7 +266,7 @@ def _choose(turn: LeducTurn, legal: list[str] | None, seat: int, turn_number: in
             candidate = "call"
     else:
         strong = pair or equity >= 0.62
-        bluff = equity < 0.35 and _bluff_roll(text, seat, turn_number) < 0.2
+        bluff = equity < 0.45 and _bluff_roll(text, seat, turn_number) < 0.2
         if "bet" in mapping and (strong or bluff):
             candidate = "bet"
         elif "check" in mapping:
