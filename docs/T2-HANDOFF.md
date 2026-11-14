@@ -60,9 +60,9 @@ python3 scripts/pipeline.py --bench         # + real arena matches and the bench
 python3 scripts/pipeline.py --json out.json # machine-readable stage results
 ```
 
-Measured: **8/8 stages, ~25 s** offline (slowest: performance, 12 s; the summary prints it). Stages:
+Measured: **9/9 stages, ~25 s** offline (slowest: performance, 12 s; the summary prints it). Stages:
 compile, unit tests, probes (17), solvers (solver smoke over every arena observation), protocol, game
-API, performance lab, prep trace. Each stage runs even if an earlier one fails; exit 1 on any failure.
+API, performance lab, prep trace, intelligence (replays -> decision quality). Each stage runs even if an earlier one fails; exit 1 on any failure.
 `scripts/game_smoke.py` checks variants/rules/observation/frame/legal→normalize/random playout/result
 for every game: **48/48 variant checks pass**. `--json` now carries per-stage seconds, `total_seconds`
 and `slowest`.
@@ -198,10 +198,29 @@ expectimax); the ported heuristics only fill gaps and official-text formats:
   to the solver layer (509 proposals, 51 declines, 0 illegal, 92 ms); a `port` probe checks Deals,
   Wordle, Liar's Dice and Connect-K; the summary prints the slowest stage and `--json` carries totals.
 
-Measured after the port: **8/8 pipeline stages, 457 tests, 17 probes at 100/100, performance index
+Measured after the port: **8/8 pipeline stages, 467 tests, 17 probes at 100/100, performance index
 0.950**, solver smoke 0 illegal. Bench `tg_deals` + `tg_liars_dice_probe`, 2 seeds each: **4/4 wins**,
 0 warnings/timeouts, p95 2.38 s, **$0.00034/match** (the solver path is also the cheap path); Liar's Dice
 shows `solver bluff: 1 4` / `liar` in the warm log.
+
+## Intelligence score (rounds produced by the bot)
+
+`scripts/intelligence.py` reads the newest `bench/results/*/replays/`, rebuilds every game from
+`(game_id, variant, seed)` in the arena and walks the timeline again, so every decision is verified
+against the real rules rather than self-reported. It prints a per-round table and a composite:
+
+| Component | Weight | What it measures |
+|---|---|---|
+| legality | 30 | our decisions that normalize onto the legal list; zeroed by an illegal/forfeit/replay error |
+| tactics | 35 | agreement/quality against our own expert stack (CFR/Leduc/chance/Deals/Connect-K); Deals offers count when within +-5 of the reference or better; bids that differ are unjudged |
+| outcome | 20 | wins + 0.5*draws over the analysed rounds (or the bench score) |
+| efficiency | 10 | half p95 latency against the 20 s move clock, half USD/match against the $0.30 cap |
+| chat | 5 | reply rate and the share of our lines within 200 characters |
+
+Current run (`bench/results/20261114-222346-port-verify`, 4 rounds, 6 decisions):
+**INTELLIGENCE 93.6/100** - legality 100, tactics 83.3, outcome 100, efficiency 94, chat 100
+(confidence: medium). It is a transparent proxy, not an IQ test: tactics is agreement with our own
+experts and the sample is small, so `--bench` should be run to produce fresh rounds before quoting it.
 
 ## Known limits / next
 
@@ -216,7 +235,7 @@ shows `solver bluff: 1 4` / `liar` in the warm log.
 ## Integration order for the main line
 
 1. Merge the branch (no conflicts expected: new files + small edits in prep/engine/chatpolicy/decide).
-2. `python3 -m unittest discover -s tests` (457) and `python3 scripts/report.py` (100/100, 17 probes).
+2. `python3 -m unittest discover -s tests` (467) and `python3 scripts/report.py` (100/100, 17 probes).
 3. `scripts/bench.py --label t2-merged --games tic_tac_toe,tg_connect4,tg_blotto_probe,tg_chess,pig`.
 4. Enable `HARNESS_TOURNAMENT=1` in the Dockerfile only if the bench gate stays green and prep worst case
    stays under ~420 s.

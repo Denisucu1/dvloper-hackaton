@@ -35,12 +35,13 @@ T2 fixes land.
 
 ## Measured after the fixes
 
-- Pipeline `--fast`: **8/8 stages, 457 tests, 48/48 game variants, 17 probes, performance index 0.950** (was 0.892); new `solvers` stage: 509 proposals, 0 illegal.
+- Pipeline `--fast`: **9/9 stages, 467 tests, 48/48 game variants, 17 probes, performance index 0.950** (was 0.892); new `solvers` stage: 509 proposals, 0 illegal.
 - `scripts/report.py`: **100.0/100**, 17 probes (including the new `port` checks).
 - mini_poker 10 seeds: 5 wins / 3 draws / 2 losses -> **50% win, 64.3% score**, gate passed.
 - Luck games: liar's dice, blackjack, roulette -> 3/3, p95 2229 ms, $0.00289/match, chat 1.00.
 - 63-action wide board: depth **3** at 0.6-1.5 s (lean evaluate) vs depth 2 before; lab model depth 3 at 8 s.
 - Port verification `tg_deals` + `tg_liars_dice_probe`, 2 seeds: **4/4**, p95 2.38 s, $0.00034/match, gate passed.
+- Intelligence stage on those replays: **93.6/100** (legality 100, tactics 83.3, outcome 100, efficiency 94, chat 100; 4 rounds, 6 decisions, medium confidence).
 - Connect-K fallback parses the real arena letter-column text and returns `drop E` on the 7x9 start.
 - `connect_four` 3 seeds after the cap: **3/3 wins**, 0 warnings, depth **6-8** in real play
   (`route=alphabeta`), p95 4.27 s, $0.0037/match, gate passed.
