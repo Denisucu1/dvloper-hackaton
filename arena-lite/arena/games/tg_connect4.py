@@ -29,11 +29,13 @@ class TestConnect4(Game):
         return [
             {"label": "7x6, connect 4", "cols": 7, "rows": 6, "connect": 4},
             {"label": "6x5, connect 3", "cols": 6, "rows": 5, "connect": 3},
+            # Mirrors the T1/Round-Robin shape that we beat with search: 9 columns, 7 rows, five in a row.
+            {"label": "7x9, connect 5", "cols": 9, "rows": 7, "connect": 5},
         ]
 
     def __init__(self, variant: dict, seed: int):
         super().__init__(variant, seed)
-        self.cols = max(4, min(8, int(self.variant.get("cols", 7))))
+        self.cols = max(4, min(9, int(self.variant.get("cols", 7))))
         self.rows = max(4, min(7, int(self.variant.get("rows", 6))))
         self.k = max(3, min(self.cols, int(self.variant.get("connect", 4))))
         self.label = str(self.variant.get("label", ""))

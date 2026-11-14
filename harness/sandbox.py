@@ -323,8 +323,13 @@ def validate_module(path: str, samples: list[dict], timeout: float = 6.0) -> tup
         action = _run(path, str(sample.get("observation", "")), legal, int(sample.get("seat", 0) or 0), timeout)
         if not action:
             return False, f"sample {index}: no action"
-        if legal is not None and normalize(action, legal) is None:
-            return False, f"sample {index}: illegal {action!r}"
+        if legal is not None:
+            if normalize(action, legal) is None:
+                return False, f"sample {index}: illegal {action!r}"
+        else:
+            text = str(action).strip()
+            if not text or len(text) > 120 or "\n" in text or text.lower() in {"none", "null"}:
+                return False, f"sample {index}: implausible free-text action {text[:60]!r}"
     return True, f"ok on {len(samples)} sample(s)"
 
 

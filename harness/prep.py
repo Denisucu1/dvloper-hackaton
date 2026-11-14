@@ -86,20 +86,44 @@ GAME NAME: {game_name}
 
 Return the JSON object now."""
 
-_GEN_SYSTEM = """Write ONE standalone Python 3 module that plays the given game.
+_GEN_SYSTEM = """Write ONE standalone Python 3 module that plays the given game, including games that are
+not boards: negotiations, auctions, word guesses, simultaneous choices, free-text answers.
 Output raw Python code ONLY — no prose, no explanations, no markdown backticks.
-Start with optional allowed imports (`math`, `random`, `re`, `itertools`, `collections`, `heapq`) and `def choose(observation: str, legal_actions: list[str] | None, seat: int) -> str:`.
-- `observation` is the exact turn text shown in the sample turns below.
-- Return ONE valid action string in the exact action format; if `legal_actions` is provided and non-empty, return an element of `legal_actions` verbatim.
-- Handle ALL variants shown cleanly. Never print, never raise, never use files/network/subprocesses, finish in <50ms."""
+Start with optional allowed imports (`math`, `random`, `re`, `itertools`, `collections`, `heapq`) and
+`def choose(observation: str, legal_actions: list[str] | None, seat: int) -> str:`.
+
+How to return the action, by regime:
+- `legal_actions` is a non-empty list: return one element of it verbatim (copy the exact spelling).
+- `legal_actions` is None and the action is numeric/structured: build the string from the observation and
+  the rules, exactly in the action format (e.g. "bid 7", "guess crane", "offer 45 50", "vote b").
+- `legal_actions` is None and the action is free text: return ONE short concrete answer, at most 50
+  characters, no explanation and no quotes. Never return an empty string, "none", "null" or a sentence.
+- Hidden information (an unseen card, a secret word, a private value): never invent it. Use only facts the
+  observation states; for unseen things play a robust mixed or expected-value choice.
+- Simultaneous moves: assume the opponent also moves now and cannot be seen; do not reason as if their
+  move were known. Prefer a mixed or robust choice, and randomize with `random` when the rules allow it.
+- If the rules say a safe abstention exists (for example "unknown"), prefer it over inventing an answer.
+
+`observation` is the exact turn text shown in the sample turns below. Handle ALL variants and ALL sample
+turns cleanly. Never print, never raise, never use files/network/subprocesses; finish in <50 ms."""
 
 _GEN_USER = """RULES (all variants):
 {rules}
 
+WHAT WE ALREADY KNOW ABOUT THE GAME:
+{context}
+
 SAMPLE TURNS TO PASS VALIDATION:
 {samples_blob}"""
 
-_GEN_FIX = """Your previous module failed validation with: {error}
+_GEN_FIX = """Your previous module failed validation with:
+{error}
+
+PREVIOUS MODULE (repair this one; do not start over):
+```python
+{source}
+```
+
 Fix it so it handles EVERY sample turn shown above cleanly. Output the full corrected Python module only."""
 
 
@@ -334,17 +358,24 @@ def _build_genpolicy(
             f"{str(sample.get('observation', ''))[:1500]}\n"
             f"legal_actions = {sample.get('legal_actions')}"
         )
+    context = ""
+    try:
+        context = str(spec.prompt_block(800) or "").strip()
+    except Exception:  # noqa: BLE001 - a spec is a hint, never a reason to fail prep
+        context = ""
     user = _GEN_USER.format(
         rules=rules_all[:6000],
+        context=context or "(no structured spec)",
         samples_blob="\n\n".join(samples_chunks),
     )
-    error = ""
+    error = "no valid Python `def choose(...)` function returned"
+    previous = ""
     for attempt in (1, 2):
-        prompt = user if attempt == 1 else user + "\n\n" + _GEN_FIX.format(error=error)
+        prompt = user if attempt == 1 else f"{user}\n\n{_GEN_FIX.format(error=error[:900], source=previous[:5000])}"
         text = gateway.ask(
             _GEN_SYSTEM if attempt == 1 else "You fix standalone Python 3 game modules.",
             prompt,
-            max_tokens=1800,
+            max_tokens=2000,
             timeout=timeout / 2,
             temperature=0.2,
         )
@@ -352,14 +383,16 @@ def _build_genpolicy(
         if not source:
             error = "no valid Python `def choose(...)` function returned"
             continue
+        previous = source
         memory.atomic_write_text(path, source)
         ok, reason = sandbox.validate_module(str(path), samples)
-        notes.append(f"genpolicy attempt {attempt}: {reason}")
-        log(f"genpolicy attempt {attempt}: {reason}")
+        detail = " ".join(str(reason).split())
+        notes.append(f"genpolicy attempt {attempt}: {detail[:160]}")
+        log(f"genpolicy attempt {attempt}: {detail[:160]}")
         if ok:
             return str(path)
-        error = reason
-        if "banned token" in reason:
+        error = detail
+        if "banned token" in detail:
             break
     try:
         path.unlink()

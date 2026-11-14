@@ -22,7 +22,7 @@ class ModelError(ValueError):
 
 # Generated artifacts live next to each other in /memory/<game_id>/; the fingerprint prefix keeps a model
 # built for one rules text from ever being played against another.
-ARTIFACT_VERSION = 5
+ARTIFACT_VERSION = 6
 MODEL_SUFFIX = "-model.py"
 POLICY_SUFFIX = "-policy.py"
 
