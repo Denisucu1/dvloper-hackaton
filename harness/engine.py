@@ -124,9 +124,20 @@ class Engine:
 
         if self.model_path and self.model_failures < 3:
             budget = min(3.0, max(1.0, timeout * 0.7))
+            # Strategy routing inside the sandbox: the generated model never runs in our process.
+            strategy, matrix_path, chance_path = "search", "", ""
+            if _flag("HARNESS_MATRIX") and (self.spec.simultaneous or self.spec.family == "read_opponent"):
+                matrix_path = _sibling("solver_matrix.py")
+                if matrix_path:
+                    strategy = "matrix"
+            if strategy == "search" and _flag("HARNESS_CHANCE"):
+                chance_path = _sibling("solver_chance.py")
+                if chance_path:
+                    strategy = "auto"
             meta = sandbox.call_model_search(
                 self.model_path, _search_path(), self.rules, observation, legal_list, seat,
-                timeout=budget, depth=8,
+                timeout=budget, depth=8, strategy=strategy,
+                matrix_path=matrix_path, chance_path=chance_path,
             )
             action = meta.get("action")
             if action:
@@ -210,3 +221,12 @@ class Engine:
 def _search_path() -> str:
     """`search.py` next to this file; it is loaded standalone inside the sandbox (no package imports)."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "search.py")
+
+
+def _sibling(name: str) -> str:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    return path if os.path.exists(path) else ""
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "0") == "1"

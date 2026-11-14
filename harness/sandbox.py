@@ -125,18 +125,43 @@ sys.stdout.write(json.dumps({"ok": not errors, "reason": "; ".join(errors) or f"
 """
 
 _MODEL_PLAY_RUNNER = _MODEL_BUILD + r"""
-import json, sys
+import json, os, sys
 payload = json.loads(sys.stdin.read())
 module = _load("generated_model", sys.argv[1])
 search = _load("sandboxed_search", sys.argv[2])
 model = _build(module, payload["rules"], int(payload["seat"]))
 model.update(payload["observation"])
-meta = search.best_action_meta(model, int(payload["seat"]),
-                               seconds=float(payload["seconds"]), max_depth=int(payload["depth"]))
+seat = int(payload["seat"])
+strategy = str(payload.get("strategy") or "search")
+meta = {}
+try:
+    if strategy in ("matrix", "chance", "auto"):
+        # Optional strategy modules are passed as extra argv paths by the parent.
+        paths = {"matrix": sys.argv[3] if len(sys.argv) > 3 else "",
+                 "chance": sys.argv[4] if len(sys.argv) > 4 else ""}
+        if strategy == "auto":
+            has_chance = callable(getattr(model, "chance_actions", None))
+            strategy = "chance" if has_chance and paths["chance"] else "search"
+        if strategy == "matrix" and paths["matrix"]:
+            matrix = _load("sandboxed_matrix", paths["matrix"])
+            action, value = matrix.MatrixSolver().propose_joint(
+                model, seat, seconds=float(payload["seconds"]), rng=None)
+            meta = {"action": action, "value": value, "route": "matrix", "depth": 0}
+        elif strategy == "chance" and paths["chance"]:
+            chance = _load("sandboxed_chance", paths["chance"])
+            action, value = chance.ChanceSolver().propose(
+                model, seat, seconds=float(payload["seconds"]),
+                max_depth=int(payload.get("depth") or 4), rng=None)
+            meta = {"action": action, "value": value, "route": "chance", "depth": 0}
+except Exception:
+    meta = {}
+if not meta.get("action"):
+    meta = search.best_action_meta(model, seat,
+                                   seconds=float(payload["seconds"]), max_depth=int(payload["depth"]))
 sys.stdout.write(json.dumps({"action": meta.get("action"), "value": meta.get("value"),
                              "route": meta.get("route"), "depth": meta.get("depth"),
                              "to_move": list(model.to_move() or []),
-                             "n_actions": len(model.legal_actions(int(payload["seat"])) or [])}))
+                             "n_actions": len(model.legal_actions(seat) or [])}))
 """
 
 
@@ -208,6 +233,9 @@ def call_model_search(
     seat: int,
     timeout: float = 3.0,
     depth: int = 8,
+    strategy: str = "search",
+    matrix_path: str = "",
+    chance_path: str = "",
 ) -> dict:
     """One play-time search inside the sandbox; returns {"action", "route", "reason", ...}.
 
@@ -221,8 +249,10 @@ def call_model_search(
         "seat": seat,
         "seconds": max(0.1, min(1.5, timeout * 0.6)),
         "depth": depth,
+        "strategy": strategy,
     }
-    result = _spawn(_MODEL_PLAY_RUNNER, [path, search_path], payload, timeout, "genmodel")
+    result = _spawn(_MODEL_PLAY_RUNNER, [path, search_path, matrix_path, chance_path],
+                    payload, timeout, "genmodel")
     if not result:
         return {"action": None, "route": "sandbox-failed", "reason": "no result"}
     action = result.get("action")
@@ -253,9 +283,13 @@ def call_model_best(
     seat: int,
     timeout: float = 3.0,
     depth: int = 8,
+    strategy: str = "search",
+    matrix_path: str = "",
+    chance_path: str = "",
 ) -> str | None:
     """Compatibility wrapper: the action only, or None. Prefer `call_model_search` for diagnostics."""
-    return call_model_search(path, search_path, rules, observation, legal, seat, timeout, depth).get("action")
+    return call_model_search(path, search_path, rules, observation, legal, seat, timeout, depth,
+                             strategy, matrix_path, chance_path).get("action")
 
 
 def inspect_source(source: str) -> str | None:
