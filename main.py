@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sys
 
-from harness import actions, config, decide, memory, prep, watchdog
+from harness import config, decide, memory, prep, watchdog
 from harness.llm import Gateway
 from harness.log import kv, log, log_exc
 from harness.state import Session
@@ -38,6 +38,7 @@ def handle_start(msg: dict, session: Session) -> dict:
     """A game begins: load the prepared variant, greet, answer `ready` inside the study clock."""
     session.gateway.configure(msg.get("llm"), cap=config.MATCH_BUDGET * config.MATCH_CONTAINER_SHARE)
     session.begin_game(msg)
+    start_rules = session.rules
     study = float(msg.get("study_seconds") or 30)
     game_id = session.game_id
 
@@ -45,6 +46,9 @@ def handle_start(msg: dict, session: Session) -> dict:
     artifacts = prep.load_artifacts(game_id)
     if artifacts is not None:
         session.adopt(artifacts)
+        if start_rules:
+            # Prep covered every variant; the rules of the drawn variant are the authoritative ones.
+            session.rules = start_rules
     elif session.spec.game_id != game_id:
         session.cold_start(msg)
         if study >= 45 and session.gateway.affordable:
@@ -128,7 +132,7 @@ def turn_fallback(msg: dict, session: Session) -> dict:
     game outright (rule 8.2). So we always answer, with the best legal move we can name.
     """
     legal = msg.get("legal_actions")
-    action = actions.choose_fallback(legal, session.avoid) or ""
+    action = decide.format_fallback(session.spec, str(msg.get("observation") or ""), legal, session.avoid) or "unknown"
     chat = session.chat.safe_line() if session.chat else "Your move."
     return {"type": "action", "action": action, "chat": chat or "Your move."}
 

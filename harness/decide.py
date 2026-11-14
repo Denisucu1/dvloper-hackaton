@@ -189,6 +189,14 @@ def _has_word(haystack: str, token: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(token)}(?!\w)", haystack) is not None
 
 
+_THOUSANDS = re.compile(r"(?<=\d)[.,](?=\d)")
+
+
+def _numbers(text: str) -> list[str]:
+    """Digit runs, with separators inside a group removed: "2,300" and "2.300" both read as 2300."""
+    return re.findall(r"\d+", _THOUSANDS.sub("", str(text or "")))
+
+
 def unsupported_answer(action: object, observation: str, chat_texts: object = None) -> bool:
     """True when a Truth answer is not backed by the document in the observation.
 
@@ -203,12 +211,14 @@ def unsupported_answer(action: object, observation: str, chat_texts: object = No
     if _ABSTAIN.search(answer):
         return False
     observed = str(observation or "").casefold()
-    observed_numbers = set(re.findall(r"\d+", observed))
-    if any(number not in observed_numbers for number in re.findall(r"\d+", answer)):
+    observed_numbers = set(_numbers(observed))
+    answer_numbers = _numbers(answer)
+    if any(number not in observed_numbers for number in answer_numbers):
         return True
     tokens = _meaningful_tokens(answer)
     if not tokens:
-        return False
+        # A number-only answer is grounded by its number (checked above); nothing at all is not.
+        return not answer_numbers
     present = sum(1 for token in tokens if _has_word(observed, token))
     if present * 2 >= len(tokens):
         return False
@@ -263,6 +273,73 @@ def _fill_template(templates: list, observation: str) -> str:
             value = "unknown"
         return re.sub(r"<[^<>]+>", value, template, count=1)
     return ""
+
+
+_FIVE = re.compile(r"\b[A-Za-z]{5}\b")
+_FIVE_SKIP = frozenset({
+    "guess", "round", "score", "board", "moves", "turn", "enter", "exact", "legal", "first", "three",
+    "player", "their", "yours", "would", "could", "which", "there", "these", "those", "after", "other",
+})
+_WORDLIKE = re.compile(r"(?i)\b(words?|letters?|spell|five-letter|5-letter)\b")
+
+
+def _offer_amount(observation: str) -> str:
+    """A plausible offer number read from the observation: the range midpoint, else the pot."""
+    span = (re.search(r"from (\d+) to (\d+)", observation)
+            or re.search(r"\b(\d{1,7})\s*-\s*(\d{1,7})\b", observation))
+    if span:
+        low, high = int(span.group(1)), int(span.group(2))
+        if 0 <= low <= high:
+            return str((low + high) // 2)
+    pot = re.search(r"(?i)\bpot\b[^\d\n]{0,40}?(\d+)", observation)
+    if pot:
+        return pot.group(1)
+    numbers = re.findall(r"\b\d+\b", observation)
+    if len(numbers) == 1:
+        return numbers[0]
+    return "50"
+
+
+def _five_letter_word(observation: str) -> str:
+    for word in _FIVE.findall(observation or ""):
+        if word.casefold() not in _FIVE_SKIP:
+            return word.casefold()
+    return "crane"
+
+
+def format_fallback(spec: Spec, observation: str, legal=None, avoid=None) -> str:
+    """A concrete action when the model failed and there is no legal list to copy from.
+
+    With a legal list this is just `actions.choose_fallback`. Without one, a bare "pass" or a template
+    ("guess <n>") is an illegal answer: the first bad answer is a warning and the second loses the game
+    (8.1), so format a real move from the spec and the observation. Never returns "".
+    """
+    legal_list = [str(item) for item in legal] if legal else None
+    if legal_list:
+        return actions.choose_fallback(legal_list, avoid) or legal_list[0]
+    observation = str(observation or "")
+    # Truth: an abstention is always legal and always honest; a concrete example may be a hallucination.
+    if spec.family == "truth":
+        return "unknown"
+    concrete = [
+        actions.clean(item)
+        for item in [spec.fallback_action, *(spec.action_examples or [])]
+        if item and "<" not in str(item) and ">" not in str(item)
+    ]
+    for candidate in concrete:
+        if candidate:
+            return candidate
+    if spec.family == "deals":
+        return f"offer {_offer_amount(observation)}"
+    if spec.family == "guessing" or _WORDLIKE.search(f"{spec.action_format} {spec.notes}"):
+        return _five_letter_word(observation)
+    filled = _fill_template([*(spec.action_examples or []), spec.action_format], observation)
+    if filled:
+        return filled
+    pattern = actions.clean(spec.action_format)
+    if pattern and "<" not in pattern and ">" not in pattern:
+        return pattern
+    return "unknown"
 
 
 _ALIAS_SYSTEM = "You list the other names of a subject. You answer with one JSON object and nothing else."
@@ -468,6 +545,24 @@ def audit_offer(gateway: Gateway, *, rules: str, observation: str, action: str, 
     fixed = target if number_is_mine else total - target
     text = str(int(fixed)) if float(fixed).is_integer() else f"{fixed:.2f}"
     return action[: match.start(2)] + text + action[match.end(2):]
+
+
+def nearest_offer(corrected: str, legal: list[str]) -> str | None:
+    """The legal offer closest to a corrected one: smallest absolute numeric difference.
+
+    Enumerated offer lists ("offer 10" ... "offer 90") rarely contain the exact corrected number; the
+    closest legal offer keeps the corrected direction instead of dropping back to the losing move.
+    """
+    match = _OFFER_MOVE.match(corrected or "")
+    if not match:
+        return None
+    target = float(match.group(2))
+    offers = []
+    for item in legal:
+        found = _OFFER_MOVE.match(str(item))
+        if found:
+            offers.append((abs(float(found.group(2)) - target), str(item)))
+    return min(offers)[1] if offers else None
 
 
 _BID_MOVE = re.compile(r"(?i)^\W*(bid|raise|overbid|pay|buy)\b[^\d-]*(\d+(?:\.\d+)?)")
@@ -714,13 +809,18 @@ def decide_turn(
                 log(f"audit rejected {action!r}; playing {fixed!r}")
                 action, source, candidate_chat = fixed, "audit", ""  # the old line celebrated a deal we refused
                 intent = "audit: the deal on the table was worse than walking away or than their share"
-    elif spec.family == "deals" and source == "model" and action and legal_list is None and _OFFER_MOVE.match(action):
+    elif spec.family == "deals" and source == "model" and action and _OFFER_MOVE.match(action):
         remaining = deadline - (time.monotonic() - started)
         corrected = audit_offer(gateway, rules=rules, observation=observation, action=action, timeout=remaining - 1.0)
         if corrected and corrected != action:
-            log(f"audit rejected {action!r}; playing {corrected!r}")
-            action, source, candidate_chat = corrected, "audit", ""  # the old line quoted the losing split
-            intent = "audit: that offer left us behind; asking for a share that keeps us ahead"
+            # With an enumerated offer list the correction must land on a legal entry, at the closest number.
+            fixed = actions.normalize(corrected, legal_list)
+            if fixed is None and legal_list:
+                fixed = nearest_offer(corrected, legal_list)
+            if fixed:
+                log(f"audit rejected {action!r}; playing {fixed!r}")
+                action, source, candidate_chat = fixed, "audit", ""  # the old line quoted the losing split
+                intent = "audit: that offer left us behind; asking for a share that keeps us ahead"
     elif spec.family == "deals" and source == "model" and action and _BID_MOVE.match(action):
         remaining = deadline - (time.monotonic() - started)
         capped = cap_bid(gateway, rules=rules, observation=observation, action=action, legal=legal_list,
@@ -738,14 +838,8 @@ def decide_turn(
         source = "scrubbed"
 
     if action is None or action == "":
-        # No legal list and nothing usable: prefer concrete fallback_action or clean non-template example.
-        candidates = [spec.fallback_action, *(spec.action_examples or [])]
-        concrete = next(
-            (str(c).strip() for c in candidates if c and "<" not in str(c) and ">" not in str(c)),
-            "",
-        )
-        action = concrete or _fill_template(candidates + [spec.action_format], observation)
-        action = action or ("unknown" if spec.family == "truth" else "pass")
+        # No model, no usable move: a concrete action for this family, never "" or a template.
+        action = format_fallback(spec, observation, legal_list, avoid)
         source = "fallback"
     if not action or not actions.is_plausible(action, spec.action_examples, allow_unknown=spec.family == "truth"):
         log(f"implausible action {action!r}; sending anyway")
