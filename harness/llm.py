@@ -160,7 +160,11 @@ class Gateway:
 
     def ask_json(self, system: str, user: str, **kwargs: Any) -> dict | None:
         text = self.ask(system, user, **kwargs)
-        return extract_json(text)
+        data = extract_json(text)
+        if data is None and text.strip():
+            # The call succeeded but the answer was not JSON: keep a short trace so prep can explain it.
+            log(f"llm: json parse failed ({len(text)} chars): {text.strip()[:140]!r}")
+        return data
 
     def key_info(self) -> dict:
         """`GET <base without /v1>/key/info` - what this key has spent (rulebook 7.5)."""

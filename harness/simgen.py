@@ -39,7 +39,9 @@ _CONTRACT = '''class Model:
     def evaluate(self, seat: int) -> float: ...      # non-terminal heuristic, 0.5 neutral
     def move_score(self, action: str) -> float: ...  # optional: higher = try first
     def clone(self) -> "Model": ...                  # deep enough copy; search mutates clones
-    def key(self) -> str: ...                        # optional transposition key'''
+    def key(self) -> str: ...                        # optional transposition key
+    def chance_actions(self) -> list[tuple[str, float]] | None: ...  # optional: outcomes + probabilities
+    def apply_chance(self, outcome: str) -> None: ...  # optional: advance by one chance outcome'''
 
 _SYSTEM = """Write ONE standalone Python 3 module that SIMULATES the given game, so a separate search
 engine can play it. You write the rules engine; our code picks the move.
@@ -78,13 +80,32 @@ clones the model and applies actions while searching. Therefore:
   the opponent's line, or build a double threat. The searcher tries those moves first.
 - key() is optional: a string that uniquely identifies the position.
 
+STOCHASTIC GAMES - dice, card draws, shuffled decks, random events, hidden future randomness:
+When a move does not fix the next state because the game rolls, deals or draws at random, the module
+must also expose the chance surface:
+    def chance_actions(self) -> list[tuple[str, float]] | None:
+        # outcomes of the random event pending NOW: (label, probability) pairs
+    def apply_chance(self, outcome: str) -> None:
+        # advance this state by one exact outcome label; never draw or invent an outcome here
+- apply() for a random move must only enter a pending-chance state, with to_move() returning [] while
+  the draw is pending. It must never sample the outcome itself.
+- chance_actions() returns a non-empty list at a pending chance node. Every label is a non-empty string,
+  every probability is finite and > 0, and the probabilities sum to 1 within 1e-6. Return None or []
+  at a decision node and when the game is over.
+- apply_chance(outcome) receives exactly one label from chance_actions() and must leave a complete
+  state: is_terminal() a bool, to_move() a list of seat ints, score() in [0, 1] when terminal. It must
+  never raise and must never use randomness.
+- A deterministic game (no dice, draws or random events) OMITS both methods entirely. A module that
+  defines one without the other is rejected.
+
 Rules for the code:
 - stdlib imports only: math, random, re, itertools, collections, heapq.
 - No prints, no file/network/process access, no other modules. The source is checked statically and
   rejected if it mentions banned tools.
 - Handle EVERY sample turn shown below; parsing must rely on the observation text.
-- No randomness: the search needs firm values. For dice or hidden numbers use expected values and only
-  facts the observation actually states; never guess an unknown secret.
+- No randomness in decision methods: never call `random` from apply(), apply_chance(), evaluate() or
+  score(); the search needs firm values. Random events are modelled only through the chance surface
+  above. For an unknown secret use only facts the observation actually states; never guess it.
 - Keep it under ~200 lines. apply() and clone() must stay under 1 ms.
 
 Output raw Python code ONLY, starting with the imports and `class Model:` - no prose, no markdown
@@ -103,7 +124,14 @@ SAMPLE TURNS (the model must handle every one):
 
 Write the module now."""
 
-_FIX = """Your previous module failed validation with: {error}
+_FIX = """Your previous module failed validation with:
+{error}
+
+PREVIOUS MODULE (repair this one; do not start over):
+```python
+{source}
+```
+
 Fix that error and output the full corrected Python module only. It must still handle every sample turn
 shown above and reproduce each sample's legal_actions exactly."""
 
@@ -220,7 +248,7 @@ def build_model(
         samples=_sample_blob(samples),
     )
     error = "no standalone Python module with class Model"
-    last_source = ""
+    previous = ""
 
     for attempt in (1, 2):
         left = _left(started, timeout)
@@ -233,11 +261,9 @@ def build_model(
 
         # Hard ceiling: half the total budget, so a slow answer cannot eat the validation window.
         ask_timeout = min(float(timeout) / 2.0, max(0.5, left - 5.0))
-        if attempt == 1:
-            prompt = user
-        else:
-            prev_block = f"\n\nYOUR PREVIOUS MODULE THAT FAILED:\n```python\n{last_source[:4500]}\n```" if last_source else ""
-            prompt = f"{user}{prev_block}\n\n{_FIX.format(error=error[:600])}"
+        prompt = user if attempt == 1 else (
+            f"{user}\n\n{_FIX.format(error=error[:900], source=previous[:5000])}"
+        )
         try:
             text = gateway.ask(_SYSTEM, prompt, max_tokens=4000, timeout=ask_timeout, temperature=0.2)
         except Exception as exc:  # noqa: BLE001 - prep must survive a gateway hiccup and try once more
@@ -253,16 +279,17 @@ def build_model(
             log(kv(simgen="attempt", n=attempt, error="no code"))
             continue
 
-        last_source = source
+        previous = source
         memory.atomic_write_text(path, source)
         validate_timeout = max(2.0, min(30.0, _left(started, timeout) - 1.0))
         ok, reason = sandbox.validate_model(str(path), samples, rules, timeout=validate_timeout)
-        reason = " ".join(str(reason).split())[:160]
-        notes.append(f"simgen attempt {attempt}: {reason}")
-        log(kv(simgen="attempt", n=attempt, ok=ok, reason=reason))
+        detail = " ".join(str(reason).split())
+        # Keep the short form for notes/logs and the full diagnostic for the repair prompt.
+        notes.append(f"simgen attempt {attempt}: {detail[:160]}")
+        log(kv(simgen="attempt", n=attempt, ok=ok, reason=detail[:160]))
         if ok:
             return str(path)
-        error = reason
+        error = detail
 
     _unlink(path)
     return None

@@ -35,3 +35,12 @@ Thumbs.db
 .vscode/
 .idea/
 poza_mafia*
+
+# probe report history
+scripts/.report-history.jsonl
+
+# probe report history
+bench/report-history.jsonl
+
+# prep lab history
+scripts/lab/.history.jsonl

@@ -52,7 +52,9 @@ def _solvers() -> list:
         ("solver_guess", "GuessingSolver"),
         ("solver_pig", "PigSolver"),
         ("solver_simul", "SimultaneousSolver"),
+        ("solver_luck", "LuckSolver"),
         ("solver_bluff", "BluffSolver"),
+        ("solver_leduc", "LeducSolver"),
         ("solver_deals", "DealsSolver"),
     ):
         try:
@@ -73,10 +75,20 @@ class Engine:
         self._seat_logged = False
         self.genpolicy_path = genpolicy_path
         self.model_path: str | None = None
+        self.strategy_hint = ""
         self.rules = ""
         self._load_generated()
         self._solvers = _solvers()
         self._grid_solver = ConnectKSolver()
+        if _flag("HARNESS_CFR"):
+            try:
+                from .cfr import CfrSolver
+                cfr = CfrSolver()
+                cfr.configure(self.spec, self.rules)
+                # CFR is exact for Kuhn-shaped games; try it before the generic bluff heuristic.
+                self._solvers.insert(0, cfr)
+            except Exception:  # noqa: BLE001 - CFR is an optional expert, never a reason to fail
+                log("cfr solver unavailable")
 
     # ------------------------------------------------------------------ artifacts
     def _load_generated(self) -> None:
@@ -92,6 +104,7 @@ class Engine:
         candidate = directory / name
         if name and candidate.name == name and candidate.exists():
             self.model_path = str(candidate)
+        self.strategy_hint = str(manifest.get("strategy") or "")
         if not self.genpolicy_path:
             policy_name = str(manifest.get("genpolicy") or "")
             policy = directory / policy_name
@@ -129,9 +142,30 @@ class Engine:
 
         if self.model_path and self.model_failures < 3:
             budget = min(3.0, max(1.0, timeout * 0.7))
+            # Strategy routing inside the sandbox: the generated model never runs in our process.
+            strategy, matrix_path, chance_path = "search", "", ""
+            # The manifest strategy is authoritative: prep already ran the tournament (auto mode needs no
+            # env flag). Missing modules simply fall through to alpha-beta.
+            if self.strategy_hint in ("matrix", "chance"):
+                if self.strategy_hint == "matrix" and _sibling("solver_matrix.py"):
+                    strategy = "matrix"
+                    matrix_path = _sibling("solver_matrix.py")
+                elif self.strategy_hint == "chance" and _sibling("solver_chance.py"):
+                    strategy = "chance"
+                    chance_path = _sibling("solver_chance.py")
+            if strategy == "search" and _flag("HARNESS_MATRIX") and (
+                    self.spec.simultaneous or self.spec.family == "read_opponent"):
+                matrix_path = _sibling("solver_matrix.py")
+                if matrix_path:
+                    strategy = "matrix"
+            if strategy == "search" and _flag("HARNESS_CHANCE"):
+                chance_path = _sibling("solver_chance.py")
+                if chance_path:
+                    strategy = "auto"
             meta = sandbox.call_model_search(
                 self.model_path, _search_path(), self.rules, observation, legal_list, seat,
-                timeout=budget, depth=8,
+                timeout=budget, depth=8, strategy=strategy,
+                matrix_path=matrix_path, chance_path=chance_path,
             )
             action = meta.get("action")
             if action:
@@ -248,3 +282,13 @@ class Engine:
 def _search_path() -> str:
     """`search.py` next to this file; it is loaded standalone inside the sandbox (no package imports)."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "search.py")
+
+
+def _sibling(name: str) -> str:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    return path if os.path.exists(path) else ""
+
+
+def _flag(name: str) -> bool:
+    # BOT_* is the only custom namespace arena-lite forwards in practice; the arena itself does not set it.
+    return os.environ.get(name, "0") == "1" or os.environ.get(f"BOT_{name}", "0") == "1"

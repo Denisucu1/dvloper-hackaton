@@ -132,10 +132,12 @@ class FakeGateway:
         self.replies = list(replies)
         self.calls = 0
         self.kwargs = []
+        self.prompts = []
 
     def ask(self, system, user, **kwargs):
         self.calls += 1
         self.kwargs.append(kwargs)
+        self.prompts.append(user)
         if not self.replies:
             raise AssertionError("gateway called more often than scripted")
         return self.replies.pop(0)
@@ -184,6 +186,16 @@ class SimgenTests(unittest.TestCase):
         ok, reason = sandbox.validate_model(str(result), SAMPLES, RULES)
         self.assertTrue(ok, reason)
 
+    def test_retry_shows_the_previous_module_to_the_model(self):
+        gateway = FakeGateway([BAD_MODEL, GOOD_MODEL])
+        result = self.build(gateway)
+
+        self.assertEqual(result, str(self.path))
+        retry = gateway.prompts[1]
+        self.assertIn("PREVIOUS MODULE", retry)
+        self.assertIn("pick 10", retry)          # the source of the failed attempt is in context
+        self.assertIn("mismatch", retry)         # and the concrete validation error
+
     def test_two_invalid_attempts_leave_no_file(self):
         gateway = FakeGateway([BAD_MODEL, BAD_MODEL])
         result = self.build(gateway)
@@ -229,6 +241,28 @@ class MultiVariantPromptTests(unittest.TestCase):
         self.assertIn("VARIANT: 3x3 classic", blob)
         self.assertIn("VARIANT: 5x5, four in a row", blob)
         self.assertIn("size", blob)
+
+
+class ChancePromptTests(unittest.TestCase):
+    """Stochastic games need the optional chance surface; deterministic games must omit it."""
+
+    def test_system_prompt_has_a_stochastic_section(self):
+        prompt = simgen._SYSTEM
+        self.assertIn("STOCHASTIC GAMES", prompt)
+        self.assertIn("chance_actions(self) -> list[tuple[str, float]] | None", prompt)
+        self.assertIn("apply_chance(self, outcome: str) -> None", prompt)
+        self.assertIn("sum to 1", prompt)
+        self.assertIn("pending-chance", prompt)
+        self.assertIn("OMITS both methods", prompt)
+
+    def test_deterministic_rule_survives_in_the_prompt(self):
+        prompt = simgen._SYSTEM.lower()
+        for phrase in ("legal_actions", "clone()", "never guess", "every sample turn"):
+            self.assertIn(phrase, prompt)
+
+    def test_contract_block_mentions_both_optional_methods(self):
+        self.assertIn("def chance_actions", simgen._CONTRACT)
+        self.assertIn("def apply_chance", simgen._CONTRACT)
 
 
 if __name__ == "__main__":

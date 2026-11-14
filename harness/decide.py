@@ -169,6 +169,60 @@ def _extra(spec: Spec) -> str:
     return _FAMILY_EXTRA.get(spec.family, _FAMILY_EXTRA["unknown"])
 
 
+# Truth: an honest abstention is always acceptable. An invented fact is not, even when the opponent's
+# chat supplied it - their words are evidence about them, never a source document.
+_ABSTAIN = re.compile(
+    r"(?i)\b(unknown|not stated|not specified|not mentioned|not in the (?:document|text|passage)|"
+    r"cannot say|can'?t say|no information|insufficient information)\b"
+)
+_TOKEN = re.compile(r"[^\W\d_]+", re.UNICODE)
+_STOPWORDS = frozenset({
+    "answer", "answers", "respond", "reply", "say", "said", "type", "write", "the", "and", "for",
+    "from", "with", "that", "this", "these", "those", "was", "were", "are", "is", "be", "been", "being",
+    "its", "it", "of", "in", "on", "at", "to", "as", "by", "or", "not", "no", "per", "according",
+    "document", "text", "passage", "source", "report", "article", "unknown", "stated", "specified",
+    "mentioned", "information", "cannot", "can", "who", "what", "where", "when", "which", "how",
+})
+
+
+def _meaningful_tokens(text: str) -> list[str]:
+    return [
+        token for token in _TOKEN.findall(str(text or "").casefold())
+        if len(token) >= 3 and token not in _STOPWORDS
+    ]
+
+
+def _has_word(haystack: str, token: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(token)}(?!\w)", haystack) is not None
+
+
+def unsupported_answer(action: object, observation: str, chat_texts: object = None) -> bool:
+    """True when a Truth answer is not backed by the document in the observation.
+
+    Checks, in order:
+    - abstention markers ("unknown", "not stated", "cannot say") are always supported;
+    - every number in the answer must already appear in the observation (an invented year or count is
+      the clearest sign of a hallucinated fact);
+    - most meaningful words of the answer must occur in the observation. Words that appear only in the
+      opponent's chat do not count: the chat is not the document.
+    """
+    answer = actions.clean(action) or str(action or "")
+    if _ABSTAIN.search(answer):
+        return False
+    observed = str(observation or "").casefold()
+    observed_numbers = set(re.findall(r"\d+", observed))
+    if any(number not in observed_numbers for number in re.findall(r"\d+", answer)):
+        return True
+    tokens = _meaningful_tokens(answer)
+    if not tokens:
+        return False
+    present = sum(1 for token in tokens if _has_word(observed, token))
+    if present * 2 >= len(tokens):
+        return False
+    # The tokens may be copied from `chat_texts`; that still makes the answer unsupported.
+    return True
+
+
 _FIELD = r'"{name}"\s*:\s*"((?:[^"\\]|\\.)*)"'
 
 
@@ -917,6 +971,26 @@ def decide_turn(
             log(f"keeping solver move {verified_proposal!r} over model {action!r}")
             action, source = verified_proposal, "engine"
 
+    # Truth: the document, not the opponent's chat, must support the answer. If the model invented a
+    # fact, abstain with a legal "unknown" action when the game offers one.
+    if spec.family == "truth" and action:
+        chat_texts = [
+            str(line.get("text") or "")
+            for line in chat_lines
+            if isinstance(line, dict) and line.get("from") == "opponent"
+        ]
+        if unsupported_answer(action, observation, chat_texts):
+            if legal_list is None:
+                unknown = "unknown"
+            else:
+                unknown = next(
+                    (str(item) for item in legal_list if "unknown" in str(item).casefold()),
+                    None,
+                )
+            if unknown:
+                log(f"truth answer {action[:60]!r} is not supported by the document; abstaining with {unknown!r}")
+                action, source = unknown, "abstain"
+
     # Obedience check: the model chose exactly the move the opponent ordered, against our own computed
     # move. Any verified solver, model search, or generated policy outranks a chat command.
     pushed = bool(action and intel.pushed_action(action))
@@ -985,7 +1059,7 @@ def decide_turn(
         source = "scrubbed"
 
     # Universal Format Guard for open-action-space games (Blotto, Wordle, Connect-K, Guess the Number)
-    if legal_list is None:
+    if legal_list is None and source != "abstain":
         guarded = actions.enforce_format(
             action,
             observation=observation,
@@ -1007,7 +1081,7 @@ def decide_turn(
         action = concrete or _fill_template(candidates + [spec.action_format], observation)
         action = action or ("unknown" if spec.family == "truth" else "pass")
         source = "fallback"
-    if not action or not actions.is_plausible(action, spec.action_examples):
+    if not action or not actions.is_plausible(action, spec.action_examples, allow_unknown=spec.family == "truth"):
         log(f"implausible action {action!r}; sending anyway")
 
     if config.CRED_LLM:  # experimental, off by default: the model's own count proved unreliable (see check_credibility)

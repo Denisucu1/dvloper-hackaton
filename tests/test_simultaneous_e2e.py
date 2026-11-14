@@ -207,6 +207,21 @@ class PrepPolicyTests(unittest.TestCase):
         self.assertFalse(worth)
         self.assertIn("hidden", why)
 
+    def test_simultaneous_game_without_private_state_is_simulated(self):
+        # Blotto: both players move at once and see the same state; that is not hidden information.
+        worth, why = prep.simgen_worthwhile(
+            Spec(family="read_opponent", hidden_information=True, simultaneous=True)
+        )
+        self.assertTrue(worth, why)
+
+    def test_simultaneous_private_card_family_is_still_skipped(self):
+        for family in ("bluff", "deals"):
+            worth, why = prep.simgen_worthwhile(
+                Spec(family=family, hidden_information=True, simultaneous=True)
+            )
+            self.assertFalse(worth, family)
+            self.assertTrue(why)
+
     def test_bluff_and_deals_are_chat_driven(self):
         for family in ("bluff", "deals"):
             self.assertFalse(prep.simgen_worthwhile(Spec(family=family))[0], family)

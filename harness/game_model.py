@@ -13,6 +13,7 @@ generated module just has to define the methods, and `check_model()` tells us wh
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -22,7 +23,7 @@ class ModelError(ValueError):
 
 # Generated artifacts live next to each other in /memory/<game_id>/; the fingerprint prefix keeps a model
 # built for one rules text from ever being played against another.
-ARTIFACT_VERSION = 6
+ARTIFACT_VERSION = 7
 MODEL_SUFFIX = "-model.py"
 POLICY_SUFFIX = "-policy.py"
 
@@ -53,6 +54,29 @@ class GameModel(Protocol):
 
     def clone(self) -> "GameModel":
         """A deep-enough copy: search mutates clones, never the live model."""
+
+    # ---------------------------------------------------------------- optional chance surface
+    # These four methods are declared for documentation and typing only. They are DELIBERATELY absent
+    # from `_REQUIRED`: a deterministic model that omits all of them is still a valid GameModel, and
+    # `check_model()` keeps accepting it. Read them through the safe helpers below, never directly.
+
+    def chance_actions(self) -> list[tuple[str, float]] | None:
+        """Outcomes of the random event that is active *now*, with probabilities.
+
+        Return a non-empty list only at a chance node (normally `to_move()` is empty there). At a
+        decision node return None or an empty list. Hand-written fixtures may use arbitrary positive
+        weights and `chance_of()` normalizes them; a *generated* model is validated by
+        `sandbox.validate_model()`, which requires probabilities > 0 that sum to 1 (within 1e-6).
+        """
+
+    def apply_chance(self, outcome: str) -> None:
+        """Apply one outcome returned by `chance_actions()` to this state (mutates in place)."""
+
+    def sample_state(self, rng) -> "GameModel" | None:
+        """Optional: draw one chance outcome and return the resulting copy (never mutates self)."""
+
+    def info_state(self) -> str | None:
+        """Optional: compact imperfect-information key, usable for transposition tables."""
 
 
 @runtime_checkable
@@ -120,3 +144,53 @@ def heuristic_of(model: Any, seat: int) -> float:
     except Exception:  # noqa: BLE001
         return 0.5
     return min(1.0, max(0.0, value))
+
+
+def has_chance(model: Any) -> bool:
+    """True when the model opts into the chance surface. A missing/broken method is simply False."""
+    return callable(getattr(model, "chance_actions", None)) or callable(
+        getattr(model, "sample_state", None)
+    )
+
+
+def chance_of(model: Any) -> list[tuple[str, float]]:
+    """Safe `chance_actions()`: [] when the method is absent, raises, or returns unusable data.
+
+    Probabilities are returned as given (weights need not sum to 1); non-finite or non-positive
+    entries are dropped so a broken generated model cannot poison an expectation.
+    """
+    getter = getattr(model, "chance_actions", None)
+    if not callable(getter):
+        return []
+    try:
+        raw = getter()
+    except Exception:  # noqa: BLE001 - an optional method must never break a turn
+        return []
+    if not raw:
+        return []
+    outcomes: list[tuple[str, float]] = []
+    try:
+        items = list(raw)
+    except Exception:  # noqa: BLE001
+        return []
+    for item in items:
+        try:
+            name, probability = item
+            weight = float(probability)
+        except Exception:  # noqa: BLE001
+            continue
+        if weight > 0.0 and math.isfinite(weight):
+            outcomes.append((str(name), weight))
+    return outcomes
+
+
+def apply_chance(model: Any, outcome: str) -> bool:
+    """Safe `apply_chance()`: True only when the model applied the outcome without raising."""
+    applier = getattr(model, "apply_chance", None)
+    if not callable(applier):
+        return False
+    try:
+        applier(str(outcome))
+        return True
+    except Exception:  # noqa: BLE001
+        return False

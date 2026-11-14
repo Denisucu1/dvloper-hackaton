@@ -265,7 +265,7 @@ class Mcts:
         exploration: float = 0.9,
         max_iters: int = 4000,
         rollout_plies: int = 10,
-        seed: int = 12345,
+        seed: int | None = 12345,
         max_branch: int = 200,
     ) -> None:
         import random
@@ -280,6 +280,10 @@ class Mcts:
         # Root priors from evaluate()/tactics; they break ties that random rollouts cannot resolve
         # (e.g. centre vs corner on an empty board).
         self._priors: dict[str, float] = {}
+        if seed is None:
+            # Simultaneous games need real entropy per turn: a fixed seed makes our "mixed" strategy a
+            # repeating pattern that a repeat opponent (round robin) can learn.
+            seed = random.SystemRandom().getrandbits(63)
         self.rng = random.Random(seed)
 
     # ------------------------------------------------------------------ public
@@ -593,7 +597,7 @@ def best_action_meta(model: Any, seat: int, seconds: float = 0.8, max_depth: int
         if route in ("not-my-turn", "no-actions"):
             return meta
         if route == "mcts-joint":
-            action, value = Mcts(model, seat, seconds=min(3.0, max(0.2, float(seconds)))).best()
+            action, value = Mcts(model, seat, seconds=min(3.0, max(0.2, float(seconds))), seed=None).best()
             meta.update(action=action, value=value)
             return meta
         actions = _safe_actions(model, seat)

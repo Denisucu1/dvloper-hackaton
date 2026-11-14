@@ -64,10 +64,20 @@ def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.001 * (attempt + 1))
     finally:
         if os.path.exists(tmp):
-            os.unlink(tmp)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def atomic_write_json(path: str | os.PathLike[str], payload: Any) -> None:
@@ -75,21 +85,35 @@ def atomic_write_json(path: str | os.PathLike[str], payload: Any) -> None:
 
 
 def read_json(path: str | os.PathLike[str], default: Any = None) -> Any:
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, ValueError) as exc:
-        if not isinstance(exc, FileNotFoundError):
-            log("memory read failed:", path, type(exc).__name__)
-        return default
+    for attempt in range(5):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                return json.load(handle)
+        except PermissionError:
+            if attempt < 4:
+                time.sleep(0.001 * (attempt + 1))
+                continue
+            return default
+        except (OSError, ValueError) as exc:
+            if not isinstance(exc, FileNotFoundError):
+                log("memory read failed:", path, type(exc).__name__)
+            return default
+    return default
 
 
 def read_text(path: str | os.PathLike[str], default: str = "") -> str:
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-    except OSError:
-        return default
+    for attempt in range(5):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                return handle.read()
+        except PermissionError:
+            if attempt < 4:
+                time.sleep(0.001 * (attempt + 1))
+                continue
+            return default
+        except OSError:
+            return default
+    return default
 
 
 def append_jsonl(path: str | os.PathLike[str], payload: Any) -> None:

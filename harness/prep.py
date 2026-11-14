@@ -44,7 +44,7 @@ def simgen_worthwhile(spec: Spec) -> tuple[bool, str]:
     reason = _SKIP_SIM_FAMILIES.get(spec.family)
     if reason:
         return False, f"{spec.family}: {reason}"
-    if spec.hidden_information:
+    if spec.hidden_information and not spec.simultaneous:
         return False, "hidden information: a deterministic model cannot see the opponent's state"
     return True, ""
 
@@ -65,7 +65,8 @@ Return exactly ONE JSON object, no markdown, with these keys:
   "action_examples": ["3-6 concrete legal action strings (e.g. 'B2', 'guess 50', 'pass') — no placeholders"],
   "fallback_action": "single literal valid action token from the rules/samples (e.g. 'B2' or '50') or ''",
   "winning_idea": "one sentence: how this game is won",
-  "hidden_information": true|false,
+  "hidden_information": true|false,  // true ONLY when part of the current state is private (cards, secret
+                                    // word/values). Simultaneous moves are NOT hidden information.
   "simultaneous": true|false,
   "scoring": "how a game/round is scored, including anything unusual",
   "speech_rules": "every restriction on what a player may SAY in chat, or empty string",
@@ -86,20 +87,44 @@ GAME NAME: {game_name}
 
 Return the JSON object now."""
 
-_GEN_SYSTEM = """Write ONE standalone Python 3 module that plays the given game.
+_GEN_SYSTEM = """Write ONE standalone Python 3 module that plays the given game, including games that are
+not boards: negotiations, auctions, word guesses, simultaneous choices, free-text answers.
 Output raw Python code ONLY — no prose, no explanations, no markdown backticks.
-Start with optional allowed imports (`math`, `random`, `re`, `itertools`, `collections`, `heapq`) and `def choose(observation: str, legal_actions: list[str] | None, seat: int) -> str:`.
-- `observation` is the exact turn text shown in the sample turns below.
-- Return ONE valid action string in the exact action format; if `legal_actions` is provided and non-empty, return an element of `legal_actions` verbatim.
-- Handle ALL variants shown cleanly. Never print, never raise, never use files/network/subprocesses, finish in <50ms."""
+Start with optional allowed imports (`math`, `random`, `re`, `itertools`, `collections`, `heapq`) and
+`def choose(observation: str, legal_actions: list[str] | None, seat: int) -> str:`.
+
+How to return the action, by regime:
+- `legal_actions` is a non-empty list: return one element of it verbatim (copy the exact spelling).
+- `legal_actions` is None and the action is numeric/structured: build the string from the observation and
+  the rules, exactly in the action format (e.g. "bid 7", "guess crane", "offer 45 50", "vote b").
+- `legal_actions` is None and the action is free text: return ONE short concrete answer, at most 50
+  characters, no explanation and no quotes. Never return an empty string, "none", "null" or a sentence.
+- Hidden information (an unseen card, a secret word, a private value): never invent it. Use only facts the
+  observation states; for unseen things play a robust mixed or expected-value choice.
+- Simultaneous moves: assume the opponent also moves now and cannot be seen; do not reason as if their
+  move were known. Prefer a mixed or robust choice, and randomize with `random` when the rules allow it.
+- If the rules say a safe abstention exists (for example "unknown"), prefer it over inventing an answer.
+
+`observation` is the exact turn text shown in the sample turns below. Handle ALL variants and ALL sample
+turns cleanly. Never print, never raise, never use files/network/subprocesses; finish in <50 ms."""
 
 _GEN_USER = """RULES (all variants):
 {rules}
 
+WHAT WE ALREADY KNOW ABOUT THE GAME:
+{context}
+
 SAMPLE TURNS TO PASS VALIDATION:
 {samples_blob}"""
 
-_GEN_FIX = """Your previous module failed validation with: {error}
+_GEN_FIX = """Your previous module failed validation with:
+{error}
+
+PREVIOUS MODULE (repair this one; do not start over):
+```python
+{source}
+```
+
 Fix it so it handles EVERY sample turn shown above cleanly. Output the full corrected Python module only."""
 
 
@@ -110,6 +135,7 @@ class PrepResult:
     rules: str = ""
     genpolicy: str | None = None
     genmodel: str | None = None
+    strategy: str = ""
     cached: bool = False
     elapsed: float = 0.0
     calls: int = 0
@@ -175,16 +201,18 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
         # one prep (429), prep "finished" in 0.9 s with a regex spec, no playbook and no simulator, and that
         # empty result was then served to every later prep of the game. /memory outlives the tournament
         # (rule 5.14), so one bad minute would have crippled the specialist for the round robin too.
+        strategy = str(manifest.get("strategy") or "")
         degraded = []
         if cached.get("source") != "prep":
             degraded.append("spec not from the model")
         if simgen_worthwhile(spec)[0] and not genmodel:
             degraded.append("no simulator")
         if not degraded or not gateway.affordable:
-            log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy), genmodel=bool(genmodel)))
+            log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy),
+                   genmodel=bool(genmodel), strategy=strategy or "-"))
             return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                              genmodel=genmodel, cached=True, elapsed=time.time() - started,
-                              notes=["cached artifact reused"])
+                              genmodel=genmodel, strategy=strategy, cached=True,
+                              elapsed=time.time() - started, notes=["cached artifact reused"])
         log(kv(prep="cache incomplete, preparing again", game=game_id, missing="; ".join(degraded)))
 
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
@@ -193,21 +221,48 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     # Everything else in prep is built on this call. If the gateway is busy or down for a moment, prep must
     # not give up in under a second with 600 on the clock (seen in the lab: every call refused with 429, prep
     # "done" in 0.9 s with nothing built). Try again with growing waits while a third of the clock is left.
-    data = None
-    for attempt, wait in enumerate(config.PREP_SPEC_WAITS + (None,), start=1):
-        data = gateway.ask_json(
-            _SPEC_SYSTEM,
-            _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id), variants=_variant_blob(variants)),
-            max_tokens=1600,
-            timeout=call_timeout,
-            temperature=0.2,
-        )
-        left = seconds - (time.time() - started)
-        if data or wait is None or not gateway.available or left < max(seconds / 3.0, wait + 60.0):
-            break
-        log(kv(prep="spec call failed, waiting to try again", attempt=attempt, wait=wait, left=round(left)))
-        time.sleep(wait)
-        call_timeout = min(call_timeout, max(20.0, (seconds - (time.time() - started)) * 0.3))
+    spec_user = _SPEC_USER.format(game_id=game_id, game_name=msg.get("game_name", game_id),
+                                  variants=_variant_blob(variants))
+    data = gateway.ask_json(
+        _SPEC_SYSTEM,
+        spec_user,
+        max_tokens=1600,
+        timeout=call_timeout,
+        temperature=0.2,
+    )
+    if not data:
+        # One retry is cheap insurance on an unseen game: a failed parse leaves the specialist without a
+        # family, playbook or speech rules, which changes chat and turn policy for the whole game.
+        left = seconds - (time.time() - started) - 120.0
+        if gateway.affordable and left > 20.0:
+            notes.append("spec retry after an unparseable answer")
+            data = gateway.ask_json(
+                _SPEC_SYSTEM + "\nReturn ONLY the JSON object, with no prose before or after it.",
+                spec_user,
+                max_tokens=2000,
+                timeout=min(90.0, max(20.0, left / 2.0)),
+                temperature=0.0,
+            )
+            if data:
+                notes.append("spec from model (retry)")
+    if not data and getattr(gateway, "failures", 0) > 0:
+        for attempt, wait in enumerate(config.PREP_SPEC_WAITS, start=2):
+            left = seconds - (time.time() - started)
+            if not gateway.available or left < max(seconds / 3.0, wait + 60.0):
+                break
+            log(kv(prep="spec call failed, waiting to try again", attempt=attempt, wait=wait, left=round(left)))
+            time.sleep(wait)
+            call_timeout = min(call_timeout, max(20.0, (seconds - (time.time() - started)) * 0.3))
+            data = gateway.ask_json(
+                _SPEC_SYSTEM + "\nReturn ONLY the JSON object, with no prose before or after it.",
+                spec_user,
+                max_tokens=2000,
+                timeout=call_timeout,
+                temperature=0.0,
+            )
+            if data:
+                notes.append("spec from model (retry)")
+                break
     if data:
         spec = Spec.from_dict({**data, "game_id": game_id}, fp)
         spec.source = "prep"
@@ -230,7 +285,7 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
 
     # Run specialist Prep Subagents on the free prep budget when clock allows (Rule 7.6 & 9.3)
     rem_after_spec = seconds - (time.time() - started)
-    if data and gateway.affordable and rem_after_spec > 60.0:
+    if data and gateway.affordable and hasattr(gateway, "base_url") and rem_after_spec > 60.0:
         from .subagents import PrepAnalystSubagent, PrepGuardrailsSubagent
 
         if not simgen_worthwhile(spec)[0]:
@@ -253,10 +308,11 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
                         extra_lines.append(f"- [{k_label}] {val}")
                 if extra_lines:
                     playbook = (playbook + "\n" + "\n".join(extra_lines)).strip()
-                for extra_word in analyst_info.get("extra_forbidden") or ():
-                    w_str = str(extra_word).strip()
-                    if w_str and w_str not in spec.forbidden_subjects:
-                        spec.forbidden_subjects.append(w_str)
+                if spec.family == "guardrails" or spec.speech_rules:
+                    for extra_word in analyst_info.get("extra_forbidden") or ():
+                        w_str = str(extra_word).strip()
+                        if w_str and w_str not in spec.forbidden_subjects:
+                            spec.forbidden_subjects.append(w_str)
                 notes.append("subagent: prep_analyst enriched playbook")
 
         if spec.forbidden_subjects:
@@ -272,7 +328,7 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     # a cent of 75). Spend some of both on a strategy brief worked out with deep thinking, and on the chat
     # plan of every variant, so no match clock or match budget is spent on either.
     left = seconds - (time.time() - started)
-    if data and gateway.affordable and left > config.STRATEGY_MIN_SECONDS + 150.0:
+    if data and gateway.affordable and hasattr(gateway, "base_url") and left > config.STRATEGY_MIN_SECONDS + 150.0:
         from . import chatplan, strategy
 
         brief = strategy.build(gateway, rules_all, spec, timeout=left - 150.0)
@@ -318,10 +374,19 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     elif GENMODEL:
         notes.append("genmodel skipped: no sample_turn")
 
+    best_strategy = ""
+    if genmodel:
+        best_strategy = _maybe_tournament(
+            genmodel, rules_all, spec, notes,
+            budget=seconds - (time.time() - started) - 60.0,
+            seed=int(fp[:8], 16) if len(fp) >= 8 else 0,
+        )
+
     manifest_doc = {
         "game_id": game_id,
         "fingerprint": fp,
         "artifact_version": ARTIFACT_VERSION,
+        "strategy": best_strategy,
         "genpolicy": (Path(genpolicy).name if genpolicy else ""),
         "genmodel": (Path(genmodel).name if genmodel else ""),
         "family": spec.family,
@@ -333,7 +398,8 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
     memory.atomic_write_json(directory / "manifest.json", manifest_doc)
 
     result = PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                        genmodel=genmodel, cached=False, elapsed=time.time() - started,
+                        genmodel=genmodel, strategy=best_strategy, cached=False,
+                        elapsed=time.time() - started,
                         calls=gateway.calls, notes=notes)
     log(kv(prep="done", game=game_id, family=spec.family, variants=len(variants),
            plan_chars=len(playbook), genpolicy=bool(genpolicy), genmodel=bool(genmodel),
@@ -414,18 +480,29 @@ def _build_genpolicy(
             f"{str(sample.get('observation', ''))[:1500]}\n"
             f"legal_actions = {sample.get('legal_actions')}"
         )
+    context = ""
+    try:
+        context = str(spec.prompt_block(800) or "").strip()
+    except Exception:  # noqa: BLE001 - a spec is a hint, never a reason to fail prep
+        context = ""
     user = _GEN_USER.format(
         rules=rules_all[:6000],
+        context=context or "(no structured spec)",
         samples_blob="\n\n".join(samples_chunks),
     )
-    error = ""
-    last_source = ""
+    error = "no valid Python `def choose(...)` function returned"
+    previous = ""
     for attempt in (1, 2):
         if attempt == 1:
             prompt = user
+        elif "banned token" in error:
+            # Do not resend the banned module: start fresh with an explicit allow-list. This is a cheap
+            # retry, not a security decision - the sandbox re-checks the next answer anyway.
+            prompt = (f"{user}\n\nYour previous answer used a banned construct ({error[:200]}). "
+                      "Write a fresh module. Allowed imports: math, random, re, itertools, collections, "
+                      "heapq. Never use __import__, eval, exec, open, subprocess, sockets, requests or urllib.")
         else:
-            prev_block = f"\n\nYOUR PREVIOUS MODULE THAT FAILED:\n```python\n{last_source[:4000]}\n```" if last_source else ""
-            prompt = user + prev_block + "\n\n" + _GEN_FIX.format(error=error)
+            prompt = f"{user}\n\n{_GEN_FIX.format(error=error[:900], source=previous[:5000])}"
         text = gateway.ask(
             _GEN_SYSTEM if attempt == 1 else "You fix standalone Python 3 game modules.",
             prompt,
@@ -437,16 +514,17 @@ def _build_genpolicy(
         if not source:
             error = "no valid Python `def choose(...)` function returned"
             continue
-        last_source = source
+        previous = source
         memory.atomic_write_text(path, source)
         ok, reason = sandbox.validate_module(str(path), samples)
-        notes.append(f"genpolicy attempt {attempt}: {reason}")
-        log(f"genpolicy attempt {attempt}: {reason}")
+        detail = " ".join(str(reason).split())
+        notes.append(f"genpolicy attempt {attempt}: {detail[:160]}")
+        log(f"genpolicy attempt {attempt}: {detail[:160]}")
         if ok:
             return str(path)
-        error = reason
-        if "banned token" in reason:
-            break
+        error = detail
+        if "banned token" in detail:
+            previous = ""
     try:
         path.unlink()
     except OSError:
@@ -490,6 +568,90 @@ def _build_genmodel(
     else:
         notes.append("genmodel rejected: falling back to policy/LLM")
     return path
+
+
+def _maybe_tournament(model_path: str, rules: str, spec: Spec, notes: list[str],
+                      budget: float, seed: int) -> str:
+    """Rank decision strategies on the validated model by self-play; return the winner's name.
+
+    Only for perfect-information games: a deterministic model cannot referee a hidden-information game.
+    Everything is best-effort: missing modules, a timeout or an exception simply keep the default search.
+    """
+    forced = (os.environ.get("HARNESS_TOURNAMENT", "0") == "1"
+              or os.environ.get("BOT_HARNESS_TOURNAMENT", "0") == "1")
+    # Default: run the tournament only where the strategy choice is genuinely open. Think-ahead games
+    # already have a proven alpha-beta path and a 150 s tournament there buys nothing.
+    auto_families = ("read_opponent", "guessing", "unknown")
+    if not (forced or spec.family in auto_families):
+        return ""
+    if budget < 60.0:
+        return ""
+    if spec.hidden_information or spec.family in ("bluff", "deals", "truth", "guardrails"):
+        return ""
+    try:
+        from . import candidates as candidate_module
+        from . import selfplay, tournament
+    except ImportError:
+        notes.append("tournament skipped: modules not available")
+        return ""
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    strategies = ["search", "greedy"]
+    if (spec.simultaneous or spec.family == "read_opponent") and os.path.exists(
+            os.path.join(here, "solver_matrix.py")):
+        strategies.insert(1, "matrix")
+    if os.path.exists(os.path.join(here, "solver_chance.py")):
+        strategies.append("chance")
+
+    def candidate(name: str) -> object:
+        return candidate_module.Candidate(kind="strategy", name=name, path=None,
+                                          meta={"strategy": name})
+
+    errors = [0]
+
+    def play(a, b, game_seed: int) -> float:
+        result = selfplay.play_game(model_path, rules,
+                                    (a.meta["strategy"], b.meta["strategy"]),
+                                    seed=game_seed, max_plies=80, seconds_per_move=0.03)
+        if result.error:
+            errors[0] += 1
+            return 0.5
+        if result.winner is None:
+            return 0.5
+        return 1.0 if result.winner == 0 else 0.0
+
+    try:
+        best, stats = tournament.run(
+            candidates=[candidate(name) for name in strategies],
+            baselines=[candidate("random")],
+            play=play,
+            budget_s=min(150.0, budget),
+            seed=seed,
+            games_per_pair=3,
+        )
+    except Exception as exc:  # noqa: BLE001 - prep must never die for an experiment
+        notes.append(f"tournament skipped: {type(exc).__name__}")
+        return ""
+    total = max(1, int(stats.get("games") or 0))
+    if errors[0] * 2 >= total:
+        notes.append(f"tournament skipped: model does not self-play ({errors[0]}/{total} errors)")
+        return ""
+    winner = str(best.meta.get("strategy") or best.name)
+    # Conservative switch: a non-search winner must actually beat search in a fresh paired match.
+    if winner != "search":
+        try:
+            duel = selfplay.head_to_head(model_path, rules, winner, "search", games=20, seed=seed + 1,
+                                         seconds_per_move=0.03, deadline=None)
+            if duel["score"] < 0.55:
+                notes.append(f"tournament: {winner} only {duel['score']:.2f} vs search; keeping search")
+                winner = "search"
+        except Exception:  # noqa: BLE001
+            winner = "search"
+    notes.append(f"tournament: {winner} ({stats.get('games', '?')} games, "
+                 f"score {best.score:.2f}, timed_out={stats.get('timed_out')})")
+    log(kv(tournament=winner, games=stats.get("games"), score=round(best.score, 3),
+           timed_out=stats.get("timed_out")))
+    return winner
 
 
 def _strip_code(text: str) -> str:
