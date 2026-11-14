@@ -171,10 +171,21 @@ def run_prep(msg: dict, gateway: Gateway) -> PrepResult:
         model_name = str(manifest.get("genmodel") or "")
         model_path = directory / model_name if model_name else None
         genmodel = str(model_path) if model_path and model_path.name == model_name and model_path.exists() else None
-        log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy), genmodel=bool(genmodel)))
-        return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
-                          genmodel=genmodel, cached=True, elapsed=time.time() - started,
-                          notes=["cached artifact reused"])
+        # A cache is reused only when it is whole. Seen in the lab: the gateway refused every call during
+        # one prep (429), prep "finished" in 0.9 s with a regex spec, no playbook and no simulator, and that
+        # empty result was then served to every later prep of the game. /memory outlives the tournament
+        # (rule 5.14), so one bad minute would have crippled the specialist for the round robin too.
+        degraded = []
+        if cached.get("source") != "prep":
+            degraded.append("spec not from the model")
+        if simgen_worthwhile(spec)[0] and not genmodel:
+            degraded.append("no simulator")
+        if not degraded or not gateway.affordable:
+            log(kv(prep="cached", game=game_id, family=spec.family, genpolicy=bool(genpolicy), genmodel=bool(genmodel)))
+            return PrepResult(spec=spec, playbook=playbook, rules=rules_all, genpolicy=genpolicy,
+                              genmodel=genmodel, cached=True, elapsed=time.time() - started,
+                              notes=["cached artifact reused"])
+        log(kv(prep="cache incomplete, preparing again", game=game_id, missing="; ".join(degraded)))
 
     budget_seconds = max(20.0, seconds * config.PREP_SHARE)
     call_timeout = min(180.0, max(20.0, budget_seconds * 0.55))

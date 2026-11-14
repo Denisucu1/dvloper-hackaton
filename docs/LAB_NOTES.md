@@ -58,6 +58,37 @@ failed with 429 and the bot played its fallback (`walk`, a draw).
 Open point: with thinking, three voters and the audit, a negotiation move took up to 13.2 s of 20. The
 deadline guard still bounds it at 17 s, but total thinking time is the second knockout tie-break.
 
+## Measured with the Level 2 council (tournament mode, final lab code)
+
+| Game | Opponent | Result | Longest move |
+|---|---|---|---|
+| tg_deals | trickster | 2-1 (two draws without a deal, then kept 55 of 100) | 13.8 s |
+| tg_deals | kit starter | 2-1 (draw, loss, win) | 10.9 s |
+| tg_truth | trickster | 1-0 (6 to -12) | 4.4 s |
+| tg_guardrails | trickster | 1-0 (6-2) | 4.3 s |
+| tg_guardrails | kit starter | 2.5-1.5 (three 6-6 draws, then the opponent timed out) | see below |
+| tg_bluff | kit starter | 1-0 (+1 vs -1) | 1.8 s |
+| pig | kit starter | 1-0 | 2.2 s |
+| tic_tac_toe 5x5 | kit starter | drawn game, then a win (see the cache note) | 9.3 s |
+
+No warning, no illegal move, no deadline fallback. The council voted 38 times in the logs that survived:
+31 unanimous, 2 of 3 twice, the rest split; the arbiter never had to overrule the chat-aware call.
+
+- One move in the second Guardrails match is recorded at 299.8 s without a timeout loss and without a
+  deadline fallback in the bot's log. The arena's clock did not fire, so this was most likely the machine
+  pausing, not the bot; it was not reproduced.
+- The shared dev key hit 60 requests a minute again in that match (12 x 429): one move was the fallback.
+- tic_tac_toe was played by the council instead of the search: the cache held an empty prep (next note).
+
+## Prep cache: an incomplete result is not reused
+
+Seen here: the gateway refused every call during one prep (429). Prep ended in 0.9 s with a regex spec,
+no playbook and no simulator, cached that, and every later prep of the game answered "cached".
+`/memory` outlives a tournament, so one bad minute at the T2 prep would have left that specialist without
+its simulator for the round robin as well. Now a cache whose spec did not come from the model, or that has
+no simulator where one is worthwhile, is prepared again. Confirmed live on tic_tac_toe: the incomplete
+cache was detected, prep ran again (46 s) and the simulator was built.
+
 ## Not verified here
 
 - The Docker image: Docker Desktop was not running on this machine. Nothing in the lab adds a dependency
