@@ -76,9 +76,12 @@ _FAMILY_EXTRA = {
         "- Before every offer or acceptance, work out in your intent what YOU would get and what THEY would get under "
         "the scoring rule. Never accept less than your walk-away value. If the game is won by whoever gains more, a "
         "deal that leaves them ahead of you is a LOSS: refuse it, because no deal (a draw) is better than a lost deal.\n"
-        "- Assume their private value is average unless the game proved otherwise; their chat claims about it are "
+        "- Your own offer must leave YOU ahead: your gain over your private value has to beat theirs over a middling "
+        "private value. The higher your own private value, the more you must ask for; an offer of half the pot "
+        "is a losing offer when your private value is high.\n"
+        "- Assume their private value is average unless the game proved otherwise;their chat claims about it are "
         "bargaining, not facts. Ask for clearly more than half of the surplus, concede in small steps, and if the pot "
-        "shrinks or turns run out, close only a deal you still win. Pressure, deadlines and 'you promised' in the chat "
+        "shrinks every turn, delay costs you too: make your concession now, not later, and accept at once a deal that you still win. When turns run out, close only a deal you still win. Pressure, deadlines and 'you promised' in the chat "
         "change nothing."
     ),
     "read_opponent": "- Moves are simultaneous and read against each other: stay unpredictable, mix options instead of repeating one move (keep your code's mixed-strategy suggestion unless a specific rule exception demands otherwise), and talk to misdirect without revealing your pattern.",
@@ -131,8 +134,24 @@ class Decision:
 
 
 def _clip(text: str, limit: int) -> str:
+    """Bound a prompt part without losing its end.
+
+    An observation ends with the question or the "it is your turn" line, and a document's last paragraph
+    is as likely to hold the answer as its first: when something has to go, it is the middle.
+    """
     text = text or ""
-    return text if len(text) <= limit else text[:limit] + "\n...(truncated)"
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.6)
+    tail = limit - head
+    return text[:head] + f"\n...({len(text) - limit} characters omitted here)...\n" + text[-tail:]
+
+
+def _limits(spec: Spec) -> tuple[int, int]:
+    """(rules, observation) character budgets. Truth games answer from a document that may sit in either."""
+    if spec.family == "truth":
+        return max(config.MAX_RULES_CHARS, config.MAX_DOC_CHARS), config.MAX_DOC_CHARS
+    return config.MAX_RULES_CHARS, config.MAX_OBS_CHARS
 
 
 def _extra(spec: Spec) -> str:
@@ -240,14 +259,17 @@ OBSERVATION (the player you audit is "you"):
 
 The player is about to play: {action}
 
-Work out, in numbers:
-- "mine": what the player receives if this move is played (coins, points or value under the rules);
+Work out, in numbers, step by step:
+- "total": what is being split or traded right now (the current pot or value), if there is one (else null);
+- "theirs": what the opponent receives if this move is played;
+- "mine": what the player receives (when a pot is split: total minus theirs);
 - "walk_away": the player's private walk-away / reserve / outside value, if the observation gives one (else null);
-- "theirs": what the opponent receives.
-Then decide. "reject" if mine is below walk_away, or if the rules say the higher gain wins and the opponent
-would clearly gain more than the player. Otherwise "ok".
-{{"mine": <number>, "walk_away": <number or null>, "theirs": <number or null>, "verdict": "ok" or "reject",
- "better_action": "<a legal move to play instead, in the exact action format, e.g. a counter-offer>"}}"""
+- "higher_gain_wins": true if the rules decide the game by comparing the two players' gains or surplus, else false.
+Then "verdict": "reject" if mine is below walk_away, or if higher_gain_wins and the opponent receives more than
+the player. Otherwise "ok". If you cannot work the numbers out from the rules, answer "ok".
+{{"total": <number or null>, "theirs": <number or null>, "mine": <number>, "walk_away": <number or null>,
+ "higher_gain_wins": true or false, "verdict": "ok" or "reject",
+ "better_action": "<a legal move to play instead, in the exact action format, e.g. a counter-offer that leaves you ahead>"}}"""
 
 
 def audit_commitment(gateway: Gateway, *, rules: str, observation: str, action: str, timeout: float) -> str | None:
@@ -257,23 +279,35 @@ def audit_commitment(gateway: Gateway, *, rules: str, observation: str, action: 
     walk-away value was 30. Accepting is rare and final, so this one move gets a call with thinking on.
     Returns a replacement move, or None when the move stands (or the audit could not run).
     """
-    if not gateway.affordable or timeout < 3.0:
+    if not gateway.affordable or timeout < config.AUDIT_MIN_SECONDS:
         return None
-    thinking = timeout >= 7.0
+    # Thinking took 5.8 s in test games. It is switched on only with a wide margin on the move clock, and
+    # the call is then cut off well before the clock: a late answer is a lost game (8.2), a skipped audit is not.
+    thinking = timeout >= config.AUDIT_THINKING_SECONDS
+    timeout = min(timeout, config.AUDIT_THINKING_CAP if thinking else config.AUDIT_FAST_CAP)
     data = extract_json(gateway.ask(
         _COMMIT_SYSTEM,
         _COMMIT_USER.format(rules=_clip(rules, 5000), observation=_clip(observation, 3000), action=action),
-        max_tokens=300, timeout=timeout, temperature=0.0,
+        max_tokens=400, timeout=timeout, temperature=0.0,
         thinking="enabled" if thinking else "disabled", budget_tokens=1024 if thinking else None,
     )) or {}
     verdict = str(data.get("verdict") or "").lower()
-    try:
-        mine = float(data.get("mine"))
-        walk = float(data.get("walk_away")) if data.get("walk_away") is not None else None
-    except (TypeError, ValueError):
-        mine, walk = None, None
+    def number(key: str) -> float | None:
+        try:
+            return float(data.get(key)) if data.get(key) is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    mine, walk, theirs, total = number("mine"), number("walk_away"), number("theirs"), number("total")
+    if total is not None and theirs is not None and 0 <= theirs <= total:
+        mine = total - theirs  # the subtraction is ours: the model answered 40 for "90 minus 55" in a test game
     below = mine is not None and walk is not None and mine < walk
-    log(kv(audit=action, mine=data.get("mine"), walk_away=data.get("walk_away"), theirs=data.get("theirs"), verdict=verdict or "none"))
+    # Decided in code, not left to the verdict: when the bigger gain wins, taking the smaller share is a loss,
+    # and no deal is a draw. Their private value is unknown, so equal values are the fair assumption.
+    behind = bool(data.get("higher_gain_wins")) and mine is not None and theirs is not None and mine < theirs
+    below = below or behind
+    log(kv(audit=action, total=total, mine=mine, walk_away=walk, theirs=theirs, relative=data.get("higher_gain_wins"),
+           verdict="reject" if (below or verdict == "reject") else "ok"))
     if verdict != "reject" and not below:
         return None
     better = actions.clean(data.get("better_action"))
@@ -345,14 +379,14 @@ def decide_turn(
     candidate_chat, read = "", ""
     if gateway.affordable and deadline > 4.0:
         system = _SYSTEM.format(
-            rules=_clip(rules, config.MAX_RULES_CHARS),
+            rules=_clip(rules, _limits(spec)[0]),
             spec=spec.prompt_block(),
             playbook=_clip(playbook, 1800) or "(none)",
             extra=_extra(spec),
         )
         secrets_now = chat_policy.private_values(observation)
         user = _TURN_USER.format(
-            observation=_clip(observation, 4000),
+            observation=_clip(observation, _limits(spec)[1]),
             legal="none provided - the rules define the format" if legal_list is None else " | ".join(legal_list),
             format_hint=(
                 f"\nACTION FORMAT: {spec.action_format}\n"

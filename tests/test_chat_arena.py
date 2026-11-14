@@ -538,6 +538,17 @@ class DealAuditTests(unittest.TestCase):
         decision, _ = self.play({"mine": 12, "walk_away": 30, "theirs": 68, "verdict": "ok", "better_action": "offer 55"})
         self.assertEqual(decision.action, "offer 55")
 
+    def test_subtraction_is_done_in_code(self):
+        # Seen live: pot 90, opponent keeps 55, the audit answered mine=40 and "ok". We get 35 and lose.
+        decision, _ = self.play({"total": 90, "theirs": 55, "mine": 40, "walk_away": 15, "higher_gain_wins": True,
+                                 "verdict": "ok", "better_action": "offer 50"})
+        self.assertEqual(decision.action, "offer 50")
+
+    def test_smaller_share_is_fine_when_gains_are_not_compared(self):
+        decision, _ = self.play({"total": 90, "theirs": 55, "mine": 35, "walk_away": 15, "higher_gain_wins": False,
+                                 "verdict": "ok", "better_action": "offer 50"})
+        self.assertEqual(decision.action, "accept")
+
     def test_good_deal_is_accepted(self):
         decision, _ = self.play({"mine": 55, "walk_away": 30, "theirs": 25, "verdict": "ok", "better_action": ""})
         self.assertEqual(decision.action, "accept")
@@ -550,6 +561,55 @@ class DealAuditTests(unittest.TestCase):
     def test_other_families_are_not_audited(self):
         _, gateway = self.play({"verdict": "reject", "better_action": "offer 50"}, family="bluff")
         self.assertEqual(gateway.thinking, [])
+
+
+class ClockAndLengthTests(unittest.TestCase):
+    def audit_mode(self, timeout):
+        seen = {}
+
+        class Gateway(FakeGateway):
+            def ask(self, system, user, **kwargs):
+                seen.update(kwargs)
+                return json.dumps({"mine": 50, "walk_away": 30, "verdict": "ok"})
+
+        decide.audit_commitment(Gateway(), rules="R", observation="O", action="accept", timeout=timeout)
+        return seen
+
+    def test_thinking_only_with_a_wide_margin_and_always_capped(self):
+        slow = self.audit_mode(14.0)
+        self.assertEqual(slow["thinking"], "enabled")
+        self.assertLessEqual(slow["timeout"], config.AUDIT_THINKING_CAP)
+        fast = self.audit_mode(8.0)  # 5.8 s was measured for a thinking call: not with 8 s left
+        self.assertEqual(fast["thinking"], "disabled")
+        self.assertLessEqual(fast["timeout"], config.AUDIT_FAST_CAP)
+        self.assertEqual(self.audit_mode(2.0), {})  # no time: no call at all, the move leaves on time
+
+    def test_worst_case_fits_the_move_clock(self):
+        # 20 s clock, 3 s safety kept by main.py, a slow first call, then the audit at its cap.
+        deadline = 20.0 - config.SAFETY
+        first_call = deadline - 1.0 - config.AUDIT_THINKING_SECONDS  # slowest first call that still allows thinking
+        self.assertLess(first_call + config.AUDIT_THINKING_CAP, deadline)
+
+    def test_clip_keeps_the_end_of_a_long_text(self):
+        text = "START " + "x" * 50000 + " It is YOUR turn: answer <text>."
+        clipped = decide._clip(text, 4000)
+        self.assertLess(len(clipped), 4100)
+        self.assertTrue(clipped.startswith("START"))
+        self.assertTrue(clipped.endswith("It is YOUR turn: answer <text>."))
+        self.assertIn("characters omitted", clipped)
+        self.assertEqual(decide._clip("short", 4000), "short")
+
+    def test_truth_document_reaches_the_model_whole(self):
+        fact = "The archive was moved to Brell in 1931."
+        document = ("Filler sentence about the harbour. " * 400) + fact + (" More filler about ships." * 300)
+        self.assertGreater(len(document), 20000)
+        observation = "DOCUMENT\n" + document + "\nQuestion 3 of 6: Where was the archive moved?\nIt is YOUR turn."
+        spec = Spec(game_id="g", family="truth")
+        gateway = FakeGateway({"intent": "stated", "action": "answer Brell", "chat": "Only what the text supports."})
+        turn(gateway, [], spec=spec, legal=None, observation=observation)
+        self.assertIn(fact, gateway.prompts[-1])
+        self.assertIn("Where was the archive moved?", gateway.prompts[-1])
+        self.assertNotIn("characters omitted", gateway.prompts[-1])
 
 
 class ParseTests(unittest.TestCase):
