@@ -56,6 +56,7 @@ def _solvers() -> list:
         ("solver_bluff", "BluffSolver"),
         ("solver_leduc", "LeducSolver"),
         ("solver_deals", "DealsSolver"),
+        ("solver_nim", "NimSolver"),
     ):
         try:
             module = __import__(f"harness.{module_name}", fromlist=[class_name])

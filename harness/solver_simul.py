@@ -21,6 +21,8 @@ _GAME_OVER = re.compile(r"\bgame\s+(?:is\s+)?over\b", re.IGNORECASE)
 _NOT_SIMUL_FAMILY = {"deals", "bluff", "truth", "guardrails"}
 
 _ROUND_PAIR = re.compile(r"Round\s+\d+\s*:\s*([a-z0-9_-]+)\s*/\s*([a-z0-9_-]+)", re.IGNORECASE)
+_RPS_THROW_LINE = re.compile(r"\byou\s+([a-z]+)\s*-\s*opponent\s+([a-z]+)", re.IGNORECASE)
+_OPP_SIGNS_TOTALS = re.compile(r"Opponent(?:'s)?\s+signs\s+so\s+far\s*:\s*([^\n]+)", re.IGNORECASE)
 _OPP_PLAYED = re.compile(
     r"\bopponent(?:'s)?\s+(?:played|chose|picked|used)\s+([a-z0-9_-]+)", re.IGNORECASE
 )
@@ -86,35 +88,80 @@ def _parse_rps_weights(rules_text: str) -> dict[str, float]:
     return weights
 
 
-def _opponent_counts(observation: str, signs: tuple[str, ...]) -> dict[str, int]:
-    """Count opponent's past choices from history lines in the observation."""
-    counts = {sign: 0 for sign in signs}
-    valid = set(signs)
+_RPS_COUNTER = {"rock": "paper", "paper": "scissors", "scissors": "rock"}
+
+
+def _recent_opponent_throws(observation: str) -> list[str]:
+    """Chronological list of opponent's past throws from history lines."""
+    history: list[str] = []
+    valid = set(_RPS)
     for line in (observation or "").splitlines():
+        m_throw = _RPS_THROW_LINE.search(line)
+        if m_throw:
+            theirs = m_throw.group(2).strip().lower()
+            if theirs in valid:
+                history.append(theirs)
+            continue
         m_pair = _ROUND_PAIR.search(line)
         if m_pair:
             theirs = m_pair.group(2).strip().lower()
             if theirs in valid:
-                counts[theirs] += 1
-            continue
-        m_opp = _OPP_PLAYED.search(line)
-        if m_opp:
-            theirs = m_opp.group(1).strip().lower()
-            if theirs in valid:
-                counts[theirs] += 1
+                history.append(theirs)
+    return history
+
+
+def _opponent_counts(observation: str, signs: tuple[str, ...]) -> dict[str, int]:
+    """Count opponent's past choices from totals summary or history lines."""
+    counts = {sign: 0 for sign in signs}
+    valid = set(signs)
+    m_totals = _OPP_SIGNS_TOTALS.search(observation or "")
+    if m_totals:
+        for sign_str, val_str in re.findall(r"([a-z]+)\s+(\d+)", m_totals.group(1), re.IGNORECASE):
+            s_low = sign_str.lower()
+            if s_low in valid:
+                counts[s_low] = int(val_str)
+        if sum(counts.values()) > 0:
+            return counts
+
+    for theirs in _recent_opponent_throws(observation):
+        counts[theirs] += 1
     return counts
 
 
 def _rps_distribution(rules_text: str, observation: str) -> list[float]:
-    """Blend exact weighted Nash (unexploitable) with soft empirical best-response."""
+    """Anti-exploitation best-response blended with exact weighted Nash."""
     w = _parse_rps_weights(rules_text)
-    nash_raw = [w["scissors"], w["rock"], w["paper"]]
+    # Signs order: ("rock", "paper", "scissors")
+    # In weighted zero-sum RPS, Nash probability of playing X is proportional to 1 / w_loses_to
+    # or proportional to the value of the sign it beats.
+    nash_raw = [w["rock"], w["paper"], w["scissors"]]
     nash_total = sum(nash_raw) or 3.0
     nash = [v / nash_total for v in nash_raw]
 
     counts = _opponent_counts(observation, _RPS)
-    prior = 2.0
-    denom = sum(counts.values()) + prior * len(_RPS)
+    total_past = sum(counts.values())
+    history = _recent_opponent_throws(observation)
+
+    # 1. Anti-spam trigger: if opponent threw the same sign 2+ times in a row, hard-counter it!
+    if len(history) >= 2 and history[-1] == history[-2]:
+        spammed = history[-1]
+        killer = _RPS_COUNTER[spammed]
+        weights = [0.05, 0.05, 0.05]
+        weights[_RPS.index(killer)] = 0.90
+        return weights
+
+    # 2. Heavy-bias counter: if opponent throws any sign >= 42% of the time after 3+ throws
+    if total_past >= 3:
+        for sign in _RPS:
+            if counts[sign] / total_past >= 0.42:
+                killer = _RPS_COUNTER[sign]
+                weights = [0.08, 0.08, 0.08]
+                weights[_RPS.index(killer)] = 0.84
+                return weights
+
+    # 3. Soft empirical adaptation
+    prior = 1.0
+    denom = total_past + prior * len(_RPS)
     q = {s: (counts[s] + prior) / denom for s in _RPS}
 
     evs = []
@@ -123,13 +170,15 @@ def _rps_distribution(rules_text: str, observation: str) -> list[float]:
         loses_to = next(k for k, v in _RPS_BEATS.items() if v == sign)
         evs.append(q[beats] * w[sign] - q[loses_to] * w[loses_to])
 
-    temp = max(0.35, 0.25 * max(w.values()))
+    temp = max(0.25, 0.20 * max(w.values()))
     max_ev = max(evs)
     exp_evs = [math.exp((ev - max_ev) / temp) for ev in evs]
     exp_sum = sum(exp_evs) or 3.0
     adaptive = [v / exp_sum for v in exp_evs]
 
-    return [0.60 * n + 0.40 * a for n, a in zip(nash, adaptive)]
+    if total_past >= 2:
+        return [0.25 * n + 0.75 * a for n, a in zip(nash, adaptive)]
+    return [0.70 * n + 0.30 * a for n, a in zip(nash, adaptive)]
 
 
 # ------------------------------------------------------------------ Colonel Blotto / Allocation Solver

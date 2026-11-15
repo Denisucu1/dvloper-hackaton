@@ -229,13 +229,59 @@ class DealsSolver:
         elif "trust" in obs_l and "betray" in obs_l:
             coop_act, defect_act = "trust", "betray"
 
-        round_m = re.search(r"(?:round|turn)\s+(\d+)\s+of\s+(\d+)", observation, re.I)
-        cur_r = int(round_m.group(1)) if round_m else 1
-        max_r = int(round_m.group(2)) if round_m else 1
+        # Check for arena Prisoner's Dilemma with qualifying score and defection counts
+        q_m = re.search(r"qualifying\s+score\s*:\s*(\d+)", observation, re.I)
+        you_pts_m = re.search(r"you\s*:\s*(\d+)\s+points.*?(\d+)\s+defections", observation, re.I | re.DOTALL)
+        opp_pts_m = re.search(r"opponent\s*:\s*(\d+)\s+points.*?(\d+)\s+defections", observation, re.I | re.DOTALL)
 
-        # Backward induction: on the final round (or a one-shot game with no round marker),
-        # defecting strictly dominates.
-        if not round_m or cur_r >= max_r:
+        if q_m and you_pts_m and opp_pts_m:
+            quota = int(q_m.group(1))
+            my_pts, my_def = int(you_pts_m.group(1)), int(you_pts_m.group(2))
+            opp_pts, opp_def = int(opp_pts_m.group(1)), int(opp_pts_m.group(2))
+
+            # 1. Clinch condition: If defecting gets us over the qualifying threshold while opponent cannot
+            if my_pts + 5 >= quota and opp_pts + 5 < quota:
+                return defect_act
+
+            # 2. If we are already qualified and opponent is not, defect to close out
+            if my_pts >= quota and opp_pts < quota:
+                return defect_act
+
+            # 3. Short fuse fast-clinch (quota <= 16): defecting 3-4 times guarantees qualifying early
+            if quota <= 16:
+                if opp_def == 0 and my_pts < quota:
+                    return defect_act
+
+            # 4. Tie-breaker protection for longer games (quota >= 25):
+            # Rule: If nobody reaches quota, the player with FEWER DEFECTIONS WINS.
+            # If we have more or equal defections than opponent, we must NOT defect blindly!
+            if my_def > opp_def:
+                return coop_act
+
+            # 5. Check opponent's last move in history lines (Tit-for-Tat)
+            opp_last_defect = False
+            for line in reversed(observation.splitlines()):
+                if "opponent" in line.lower() and ("defect" in line.lower() or "betray" in line.lower() or "steal" in line.lower()):
+                    opp_last_defect = True
+                    break
+                elif "opponent" in line.lower() and ("cooperate" in line.lower() or "split" in line.lower() or "trust" in line.lower()):
+                    opp_last_defect = False
+                    break
+
+            if opp_last_defect and my_def < opp_def:
+                return defect_act
+
+            return coop_act
+
+        round_m = re.search(r"(?:round|turn)\s+(\d+)\s+of\s+(\d+)", observation, re.I)
+        if round_m:
+            cur_r = int(round_m.group(1))
+            max_r = int(round_m.group(2))
+            # Backward induction on known final round
+            if cur_r >= max_r:
+                return defect_act
+        elif not re.search(r"\bround\s+\d+\b", observation, re.I):
+            # One-shot dilemma: defection strictly dominates
             return defect_act
 
         opp_moves = re.findall(

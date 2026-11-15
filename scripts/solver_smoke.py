@@ -58,6 +58,7 @@ SOLVER_MODULES = (
     "solver_bluff",
     "solver_deals",
     "solver_grid",
+    "solver_nim",
 )
 
 MAX_PLIES = 120
