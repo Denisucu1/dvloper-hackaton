@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<title>Un bot care nu repornește de la zero</title>
+<style>
+  :root { --ink:#1d2433; --muted:#5b6577; --line:#e2e8f0; --blue:#2563eb; --amber:#d97706; --green:#16a34a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0f172a; font-family: Inter, "DejaVu Sans", Arial, sans-serif; color:var(--ink); }
+  .deck { display:flex; flex-direction:column; align-items:center; gap:28px; padding:28px 0 60px; }
+  .slide {
+    width:min(1180px, 94vw); aspect-ratio:16/9; background:#fff; border-radius:18px;
+    padding:44px 54px; box-shadow:0 18px 50px rgba(0,0,0,.35); display:flex; flex-direction:column;
+    overflow:hidden; scroll-snap-align:start;
+  }
+  h1 { font-size:40px; line-height:1.08; margin:0 0 10px; letter-spacing:-.5px; }
+  h2 { font-size:33px; line-height:1.1; margin:0 0 14px; letter-spacing:-.4px; }
+  .kicker { color:var(--muted); font-size:18px; margin:0 0 18px; }
+  ul { margin:8px 0 0; padding-left:26px; }
+  li { font-size:23px; line-height:1.38; margin:0 0 10px; }
+  .title-slide { justify-content:center; background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 60%,#fef3c7 100%); }
+  .title-slide h1 { font-size:52px; }
+  .title-slide .kicker { font-size:24px; }
+  .title-slide li { font-size:21px; }
+  .center { justify-content:center; }
+  .diagram { margin-top:auto; display:flex; justify-content:center; }
+  .diagram img { width:100%; max-height:40vh; object-fit:contain; }
+  .note { margin-top:auto; color:var(--muted); font-size:17px; border-top:1px solid var(--line); padding-top:12px; }
+  .num { position:absolute; }
+  .slide { position:relative; }
+  .slide .tag { position:absolute; right:26px; bottom:18px; font-size:14px; color:#94a3b8; }
+  .big { font-size:31px; line-height:1.25; margin:0 0 14px; }
+  @media print {
+    body { background:#fff; }
+    .deck { gap:0; padding:0; }
+    .slide { width:100%; height:100vh; border-radius:0; box-shadow:none; page-break-after:always; }
+    .slide:last-child { page-break-after:auto; }
+  }
+</style>
+</head>
+<body>
+<main class="deck">
+
+  <section class="slide title-slide">
+    <h1>Un bot care nu repornește de la zero</h1>
+    <p class="kicker">Memorie partajată, execuție robustă, măsurare onestă</p>
+    <ul>
+      <li>10 minute de pregătire, 20 de secunde pe mutare</li>
+      <li>2 CPU, 2 GB, un singur model</li>
+      <li>aceeași imagine rulează toate meciurile</li>
+    </ul>
+    <span class="tag">1 / 7</span>
+  </section>
+
+  <section class="slide">
+    <h2>Botul învață între meciuri</h2>
+    <p class="kicker">Fiecare joc lasă ceva în urmă.</p>
+    <ul>
+      <li>la pregătire se construiește un dosar al jocului: reguli înțelese, plan, material de sprijin</li>
+      <li>dosarul rămâne disponibil pentru containerele echipei și pentru meciurile următoare</li>
+      <li>următorul meci pornește din ce s-a acumulat, nu de la zero</li>
+      <li>la final, observațiile pot deveni lecții pentru data viitoare</li>
+    </ul>
+    <div class="diagram"><img src="diagrams/01-ciclul-jocului.png" alt="Ciclul unui joc"></div>
+    <span class="tag">2 / 7</span>
+  </section>
+
+  <section class="slide">
+    <h2>Memoria care nu se strică</h2>
+    <p class="kicker">Un dosar bun e refolosit. Un dosar incomplet e refăcut.</p>
+    <ul>
+      <li>fiecare dosar este legat de regulile exacte ale jocului, ca variantele să nu se amestece</li>
+      <li>scrierea se face în siguranță, chiar dacă mai multe containere lucrează simultan</li>
+      <li>un dosar incomplet este detectat și refuzat, nu servit tuturor meciurilor următoare</li>
+      <li>un container rece, fără pregătire, are un plan de rezervă și poate porni imediat</li>
+    </ul>
+    <div class="diagram"><img src="diagrams/02-memoria.png" alt="Memoria"></div>
+    <span class="tag">3 / 7</span>
+  </section>
+
+  <section class="slide">
+    <h2>Prep-ul ca un battle royale intern</h2>
+    <p class="kicker">Candidații joacă între ei înainte să joace împotriva adversarului.</p>
+    <ul>
+      <li>în pregătire, mai multe abordări candidate sunt puse să joace una împotriva celeilalte</li>
+      <li>toate rulează pe aceleași reguli, aceleași condiții de start și același buget de timp</li>
+      <li>meciurile se repetă, ca rezultatul să fie comparabil și reproductibil</li>
+      <li>planul câștigător intră în meciul real; dacă diferența e mică, rămâne varianta sigură</li>
+    </ul>
+    <div class="diagram"><img src="diagrams/04-battle-royale.png" alt="Battle royale"></div>
+    <span class="tag">4 / 7</span>
+  </section>
+
+  <section class="slide">
+    <h2>Robustețe</h2>
+    <p class="kicker">Botul poate greși, dar nu are voie să tacă.</p>
+    <ul>
+      <li>fiecare mesaj primește un răspuns valid înainte de deadline</li>
+      <li>dacă modelul întârzie sau eșuează, există o mutare de siguranță, mereu legală</li>
+      <li>erorile temporare sunt reîncercate fără să depășească timpul alocat</li>
+      <li>chatul advers este tratat ca date, filtrat înainte să ajungă în decizie</li>
+      <li>mutările sensibile sunt verificate înainte de trimitere</li>
+    </ul>
+    <div class="diagram"><img src="diagrams/03-robustete.png" alt="Robustețe"></div>
+    <span class="tag">5 / 7</span>
+  </section>
+
+  <section class="slide center">
+    <h2>Cum știm că funcționează</h2>
+    <p class="kicker">Fiecare schimbare are un before/after.</p>
+    <ul>
+      <li>pipeline cu 9 stagii, de la compilare până la scorul de inteligență</li>
+      <li>521 de teste automate</li>
+      <li>zero mutări ilegale, zero warnings, zero timeouts în bench</li>
+      <li>index de performanță 0.950, reproductibil</li>
+      <li>scor de inteligență 94/100 pe un run de 10 seeds: rundele sunt re-jucate prin reguli, iar fiecare decizie este verificată</li>
+    </ul>
+    <span class="tag">6 / 7</span>
+  </section>
+
+  <section class="slide center">
+    <h2>Închidere</h2>
+    <p class="big">Memoria îl face mai bun la meciul următor. Robustețea îl ține în joc acum.</p>
+    <ul>
+      <li>pregătirea construiește, memoria păstrează, verificările apără</li>
+      <li>modelul aduce flexibilitate, sistemul aduce consecvență</li>
+      <li>rezultatul nu e un bot perfect, ci un bot care nu se prăbușește</li>
+    </ul>
+    <span class="tag">7 / 7</span>
+  </section>
+
+</main>
+</body>
+</html>

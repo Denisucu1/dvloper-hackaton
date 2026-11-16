@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="1200" height="540">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+<rect width="1200" height="540" fill="#ffffff"/>
+<text x="40" y="58" font-family="DejaVu Sans, Arial" font-size="30" font-weight="700" fill="#1d2433">Prep-ul ca un battle royale intern</text>
+<text x="40" y="92" font-family="DejaVu Sans, Arial" font-size="19" fill="#5b6577">candidații joacă între ei înainte să joace împotriva adversarului</text>
+<rect x="40" y="160" width="240" height="80" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5"/>
+<text x="160.0" y="209.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="22" font-weight="700" fill="#1d2433">Abordarea A</text>
+<rect x="40" y="270" width="240" height="80" rx="14" fill="#fef3c7" stroke="#d97706" stroke-width="2.5"/>
+<text x="160.0" y="319.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="22" font-weight="700" fill="#1d2433">Abordarea B</text>
+<rect x="40" y="380" width="240" height="80" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2.5"/>
+<text x="160.0" y="429.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="22" font-weight="700" fill="#1d2433">Abordarea C</text>
+<rect x="360" y="225" width="260" height="120" rx="14" fill="#ede9fe" stroke="#7c3aed" stroke-width="2.5"/>
+<text x="490.0" y="279.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="22" font-weight="700" fill="#1d2433">Meciuri repetate</text>
+<text x="490.0" y="309.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">aceleași reguli · același timp</text>
+<rect x="700" y="225" width="200" height="120" rx="14" fill="#f1f5f9" stroke="#64748b" stroke-width="2.5"/>
+<text x="800.0" y="279.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="24" font-weight="700" fill="#1d2433">Clasament</text>
+<text x="800.0" y="309.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">scor comparabil</text>
+<rect x="955" y="225" width="205" height="120" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2.5"/>
+<text x="1057.5" y="279.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="20" font-weight="700" fill="#1d2433">Planul meciului</text>
+<text x="1057.5" y="309.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">câștigătorul</text>
+<line x1="280" y1="200" x2="358" y2="285" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="280" y1="310" x2="358" y2="285" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="280" y1="420" x2="358" y2="285" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="620" y1="285" x2="698" y2="285" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="900" y1="285" x2="953" y2="285" stroke="#16a34a" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M 800 345 C 800 430, 620 430, 620 347" fill="none" stroke="#7c3aed" stroke-width="3" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<text x="600" y="470" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="19" fill="#5b6577">se repetă pe aceleași condiții, ca rezultatul să fie reproductibil</text>
+<text x="40" y="515" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">dacă diferența dintre candidați este mică, planul rămâne varianta sigură.</text>
+</svg>

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+<rect width="1200" height="560" fill="#ffffff"/>
+<text x="40" y="58" font-family="DejaVu Sans, Arial" font-size="30" font-weight="700" fill="#1d2433">Memoria: refolosim doar un dosar complet</text>
+<rect x="380" y="95" width="440" height="75" rx="14" fill="#f1f5f9" stroke="#64748b" stroke-width="2.5"/>
+<text x="600.0" y="141.5" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="19" font-weight="700" fill="#1d2433">La start: caută dosarul pentru aceste reguli</text>
+<rect x="60" y="250" width="300" height="110" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5"/>
+<text x="210.0" y="297.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="24" font-weight="700" fill="#1d2433">Nu există dosar</text>
+<text x="210.0" y="329.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">construiește în pregătire</text>
+<rect x="400" y="250" width="340" height="110" rx="14" fill="#fef3c7" stroke="#d97706" stroke-width="2.5"/>
+<text x="570.0" y="297.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="25" font-weight="700" fill="#1d2433">Există, dar e incomplet</text>
+<text x="570.0" y="329.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">detectează și refă</text>
+<rect x="790" y="250" width="350" height="110" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2.5"/>
+<text x="965.0" y="297.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="25" font-weight="700" fill="#1d2433">Există și e complet</text>
+<text x="965.0" y="329.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">refolosește imediat</text>
+<line x1="480" y1="172" x2="210" y2="248" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="300" y="205" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">nu</text>
+<line x1="570" y1="172" x2="570" y2="248" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="720" y1="172" x2="965" y2="248" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="880" y="205" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">da</text>
+<rect x="330" y="420" width="540" height="95" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5"/>
+<text x="600.0" y="459.5" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="21" font-weight="700" fill="#1d2433">Scriere sigură, partajată</text>
+<text x="600.0" y="491.5" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">fișiere întregi; containere multiple</text>
+<line x1="600" y1="360" x2="600" y2="418" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="40" y="540" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">Un dosar incomplet nu este servit următoarelor meciuri.</text>
+</svg>

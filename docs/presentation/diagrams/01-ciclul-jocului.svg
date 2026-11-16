@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" width="1200" height="460">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+<rect width="1200" height="460" fill="#ffffff"/>
+<text x="40" y="58" font-family="DejaVu Sans, Arial" font-size="30" font-weight="700" fill="#1d2433">Ciclul unui joc: fiecare meci lasă ceva în urmă</text>
+<rect x="40" y="130" width="250" height="130" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="2.5"/>
+<text x="165.0" y="187.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="28" font-weight="700" fill="#1d2433">PREP</text>
+<text x="165.0" y="219.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">reguli → plan + dosar</text>
+<rect x="360" y="130" width="250" height="130" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2.5"/>
+<text x="485.0" y="187.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="28" font-weight="700" fill="#1d2433">MECI</text>
+<text x="485.0" y="219.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">start · ture · end</text>
+<rect x="680" y="130" width="250" height="130" rx="14" fill="#fef3c7" stroke="#d97706" stroke-width="2.5"/>
+<text x="805.0" y="187.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="28" font-weight="700" fill="#1d2433">MEMORIE</text>
+<text x="805.0" y="219.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="18" fill="#5b6577">dosar legat de reguli</text>
+<rect x="980" y="130" width="180" height="130" rx="14" fill="#f1f5f9" stroke="#64748b" stroke-width="2.5"/>
+<text x="1070.0" y="187.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="28" font-weight="700" fill="#1d2433">MECI</text>
+<text x="1070.0" y="219.0" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="17" fill="#5b6577">pornește din dosar</text>
+<line x1="290" y1="195" x2="358" y2="195" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="610" y1="195" x2="678" y2="195" stroke="#16a34a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="930" y1="195" x2="978" y2="195" stroke="#d97706" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M 805 260 C 805 380, 165 380, 165 262" fill="none" stroke="#d97706" stroke-width="3" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<text x="485" y="408" text-anchor="middle" font-family="DejaVu Sans, Arial" font-size="19" fill="#5b6577">dosarul complet se refolosește la următorul meci</text>
+</svg>
